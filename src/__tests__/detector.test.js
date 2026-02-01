@@ -384,4 +384,139 @@ describe('createDetector', () => {
       expect(loopDetections.length).toBe(1);
     });
   });
+
+  describe('async infinite loop detection', () => {
+    test('fires detection when commits across tasks exceed maxCommitsPerWindow within windowMs', (done) => {
+      const onDetection = jest.fn();
+      const detector = tracked({
+        onDetection,
+        sampleRate: 1.0,
+        maxCommitsPerTask: 1000,  // high — won't trigger sync detection
+        maxCommitsPerWindow: 5,
+        windowMs: 1000,
+        onInfiniteLoop: 'report',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      // First task: 2 commits
+      detector.handleCommit(makeLayoutEffectRoot());
+      now += 1;
+      detector.handleCommit(makeLayoutEffectRoot());
+
+      // Wait for task boundary
+      setTimeout(() => {
+        now += 10;
+        // Second task: 2 more commits
+        detector.handleCommit(makeLayoutEffectRoot());
+        now += 1;
+        detector.handleCommit(makeLayoutEffectRoot());
+
+        setTimeout(() => {
+          now += 10;
+          // Third task: 1 more commit — total 5, should trigger
+          detector.handleCommit(makeLayoutEffectRoot());
+
+          const loopDetections = onDetection.mock.calls.filter(
+            c => c[0].type === 'infinite-loop'
+          );
+          expect(loopDetections.length).toBe(1);
+          expect(loopDetections[0][0].pattern).toBe('infinite-loop-async');
+          expect(loopDetections[0][0].commitCount).toBe(5);
+          done();
+        }, 0);
+      }, 0);
+    });
+
+    test('async window resets after windowMs elapses', (done) => {
+      const onDetection = jest.fn();
+      const detector = tracked({
+        onDetection,
+        sampleRate: 1.0,
+        maxCommitsPerTask: 1000,
+        maxCommitsPerWindow: 5,
+        windowMs: 100,
+        onInfiniteLoop: 'report',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      // 3 commits in first window
+      for (let i = 0; i < 3; i++) {
+        now += 1;
+        detector.handleCommit(makeLayoutEffectRoot());
+      }
+
+      setTimeout(() => {
+        // Jump past windowMs
+        now += 200;
+
+        // 3 more commits in new window — should NOT trigger (only 3 in this window)
+        for (let i = 0; i < 3; i++) {
+          now += 1;
+          detector.handleCommit(makeLayoutEffectRoot());
+        }
+
+        const loopDetections = onDetection.mock.calls.filter(
+          c => c[0].type === 'infinite-loop'
+        );
+        expect(loopDetections.length).toBe(0);
+        done();
+      }, 0);
+    });
+
+    test('async throw mode throws InfiniteLoopError', (done) => {
+      const detector = tracked({
+        sampleRate: 1.0,
+        maxCommitsPerTask: 1000,
+        maxCommitsPerWindow: 3,
+        windowMs: 1000,
+        onInfiniteLoop: 'throw',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      detector.handleCommit(makeLayoutEffectRoot());
+      now += 1;
+      detector.handleCommit(makeLayoutEffectRoot());
+
+      setTimeout(() => {
+        now += 10;
+        expect(() => {
+          detector.handleCommit(makeLayoutEffectRoot());
+        }).toThrow(InfiniteLoopError);
+        done();
+      }, 0);
+    });
+
+    test('sync detection takes priority over async when both would fire', () => {
+      const onDetection = jest.fn();
+      const detector = tracked({
+        onDetection,
+        sampleRate: 1.0,
+        maxCommitsPerTask: 3,
+        maxCommitsPerWindow: 3,
+        windowMs: 1000,
+        onInfiniteLoop: 'report',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      for (let i = 0; i < 5; i++) {
+        now += 1;
+        detector.handleCommit(makeLayoutEffectRoot());
+      }
+
+      const loopDetections = onDetection.mock.calls.filter(
+        c => c[0].type === 'infinite-loop'
+      );
+      // Only sync should fire — guard prevents async double-fire
+      expect(loopDetections.length).toBe(1);
+      expect(loopDetections[0][0].pattern).toBe('infinite-loop-sync');
+    });
+  });
 });

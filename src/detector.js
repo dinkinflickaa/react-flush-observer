@@ -163,7 +163,8 @@ function createDetector(config = {}) {
     if (
       state.windowCommitCount >= maxCommitsPerWindow &&
       !state.asyncLoopFiredThisWindow &&
-      !state.syncLoopFiredThisTask
+      !state.syncLoopFiredThisTask &&
+      state.commitCountInCurrentTask < maxCommitsPerTask - 1
     ) {
       state.asyncLoopFiredThisWindow = true;
       handleLoopDetection(
