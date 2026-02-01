@@ -5,6 +5,7 @@ if (typeof globalThis.MessageChannel === 'undefined') {
 }
 
 const { install } = require('../index');
+const { InfiniteLoopError } = require('../errors');
 
 describe('install', () => {
   let originalHook;
@@ -123,5 +124,75 @@ describe('install', () => {
 
     uninstall();
     expect(window.__REACT_DEVTOOLS_GLOBAL_HOOK__).toBe(previousHook);
+  });
+
+  test('passes infinite loop config to detector', () => {
+    delete window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+    const onDetection = jest.fn();
+    const uninstall = install({
+      onDetection,
+      maxCommitsPerTask: 3,
+      onInfiniteLoop: 'report',
+    });
+    uninstallFns.push(uninstall);
+
+    let now = 100;
+    const origNow = performance.now;
+    performance.now = () => now;
+
+    const root = {
+      current: {
+        tag: 0, type: function Test() {}, flags: 36, subtreeFlags: 36,
+        lanes: 0, childLanes: 0, sibling: null,
+        child: { tag: 0, type: function Inner() {}, flags: 36, subtreeFlags: 0, lanes: 0, childLanes: 0, child: null, sibling: null },
+      },
+    };
+
+    for (let i = 0; i < 5; i++) {
+      now += 1;
+      window.__REACT_DEVTOOLS_GLOBAL_HOOK__.onCommitFiberRoot(1, root, 0, false);
+    }
+
+    const loopDetections = onDetection.mock.calls.filter(
+      c => c[0].type === 'infinite-loop'
+    );
+    expect(loopDetections.length).toBe(1);
+    performance.now = origNow;
+  });
+
+  test('InfiniteLoopError propagates through onCommitFiberRoot', () => {
+    delete window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+    const uninstall = install({
+      maxCommitsPerTask: 3,
+      onInfiniteLoop: 'throw',
+    });
+    uninstallFns.push(uninstall);
+
+    let now = 100;
+    const origNow = performance.now;
+    performance.now = () => now;
+
+    const root = {
+      current: {
+        tag: 0, type: function Test() {}, flags: 36, subtreeFlags: 36,
+        lanes: 0, childLanes: 0, sibling: null,
+        child: { tag: 0, type: function Inner() {}, flags: 36, subtreeFlags: 0, lanes: 0, childLanes: 0, child: null, sibling: null },
+      },
+    };
+
+    expect(() => {
+      for (let i = 0; i < 5; i++) {
+        now += 1;
+        window.__REACT_DEVTOOLS_GLOBAL_HOOK__.onCommitFiberRoot(1, root, 0, false);
+      }
+    }).toThrow(InfiniteLoopError);
+
+    performance.now = origNow;
+  });
+
+  test('exports InfiniteLoopError', () => {
+    const mod = require('../index');
+    expect(mod.InfiniteLoopError).toBeDefined();
+    expect(new mod.InfiniteLoopError({ commitCount: 1, pattern: 'test' })).toBeInstanceOf(Error);
   });
 });

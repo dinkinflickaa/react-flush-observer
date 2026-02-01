@@ -1,13 +1,25 @@
 const { createDetector } = require('./detector');
+const { InfiniteLoopError } = require('./errors');
 
 function install(config = {}) {
   const {
     sampleRate = 1.0,
     onDetection = null,
+    maxCommitsPerTask,
+    maxCommitsPerWindow,
+    windowMs,
+    onInfiniteLoop,
   } = config;
 
   const existingHook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
-  const detector = createDetector({ sampleRate, onDetection });
+  const detector = createDetector({
+    sampleRate,
+    onDetection,
+    maxCommitsPerTask,
+    maxCommitsPerWindow,
+    windowMs,
+    onInfiniteLoop,
+  });
 
   window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
     supportsFiber: true,
@@ -17,7 +29,11 @@ function install(config = {}) {
     onCommitFiberRoot(id, root, priority, didError) {
       try {
         detector.handleCommit(root);
-      } catch (_) {
+      } catch (e) {
+        if (e instanceof InfiniteLoopError) {
+          existingHook?.onCommitFiberRoot?.(id, root, priority, didError);
+          throw e;
+        }
         // Observability must never break the observed application
       }
       existingHook?.onCommitFiberRoot?.(id, root, priority, didError);
@@ -36,4 +52,4 @@ function install(config = {}) {
   };
 }
 
-module.exports = { install };
+module.exports = { install, InfiniteLoopError };
