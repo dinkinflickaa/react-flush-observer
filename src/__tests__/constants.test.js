@@ -9,6 +9,9 @@ const {
   LayoutMask,
   DidCapture,
   Visibility,
+  DEFAULT_MAX_COMMITS_PER_TASK,
+  DEFAULT_MAX_COMMITS_PER_WINDOW,
+  DEFAULT_WINDOW_MS,
 } = require('../constants');
 
 describe('constants', () => {
@@ -53,5 +56,17 @@ describe('constants', () => {
     // Visibility should not overlap with LayoutMask or DidCapture
     expect(Visibility & LayoutMask).toBe(0);
     expect(Visibility & DidCapture).toBe(0);
+  });
+
+  test('DEFAULT_MAX_COMMITS_PER_TASK is 50', () => {
+    expect(DEFAULT_MAX_COMMITS_PER_TASK).toBe(50);
+  });
+
+  test('DEFAULT_MAX_COMMITS_PER_WINDOW is 50', () => {
+    expect(DEFAULT_MAX_COMMITS_PER_WINDOW).toBe(50);
+  });
+
+  test('DEFAULT_WINDOW_MS is 1000', () => {
+    expect(DEFAULT_WINDOW_MS).toBe(1000);
   });
 });

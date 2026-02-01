@@ -12,6 +12,11 @@ const LayoutMask = 0b00000000000000000000100100;  // 36
 const DidCapture = 0b00000000000000010000000000;  // 1024
 const Visibility = 0b00000000000010000000000000;  // 8192
 
+// Infinite loop detection defaults
+const DEFAULT_MAX_COMMITS_PER_TASK   = 50;
+const DEFAULT_MAX_COMMITS_PER_WINDOW = 50;
+const DEFAULT_WINDOW_MS              = 1000;
+
 module.exports = {
   FunctionComponent,
   ClassComponent,
@@ -23,4 +28,7 @@ module.exports = {
   LayoutMask,
   DidCapture,
   Visibility,
+  DEFAULT_MAX_COMMITS_PER_TASK,
+  DEFAULT_MAX_COMMITS_PER_WINDOW,
+  DEFAULT_WINDOW_MS,
 };
