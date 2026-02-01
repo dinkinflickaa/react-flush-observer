@@ -73,13 +73,27 @@ function createDetector(config = {}) {
 
   function handleLoopDetection(root, pattern, commitCount, windowDuration) {
     const report = buildLoopReport(root, pattern, commitCount, windowDuration);
+    const isSync = pattern === 'infinite-loop-sync';
 
     if (onInfiniteLoop === 'throw') {
-      dispose();
-      if (onDetection) {
-        setTimeout(() => onDetection(report), 0);
+      if (isSync) {
+        // Sync: throw unwinds the synchronous cascade; deliver report after unwind
+        dispose();
+        if (onDetection) {
+          setTimeout(() => onDetection(report), 0);
+        }
+        throw new InfiniteLoopError(report);
+      } else {
+        // Async: throwing from onCommitFiberRoot can't stop a scheduler-driven
+        // loop — React catches devtools-hook errors internally.  Instead,
+        // dispose and deliver the report via microtask.  Microtasks run before
+        // the next macrotask (React's scheduler), giving consumers time to
+        // force-unmount the subtree (e.g. via ReactDOM.flushSync).
+        dispose();
+        if (onDetection) {
+          queueMicrotask(() => onDetection(report));
+        }
       }
-      throw new InfiniteLoopError(report);
     } else {
       // report mode
       onDetection?.(report);

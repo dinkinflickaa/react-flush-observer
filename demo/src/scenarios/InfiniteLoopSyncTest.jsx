@@ -15,16 +15,6 @@ function InfiniteLooper({ active }) {
 
 export default function InfiniteLoopSyncTest() {
   const [active, setActive] = useState(false);
-  const [error, setError] = useState(null);
-
-  const handleClick = () => {
-    setError(null);
-    try {
-      setActive(true);
-    } catch (e) {
-      setError(e.message);
-    }
-  };
 
   return (
     <div className="bg-white rounded-lg p-4 shadow-sm">
@@ -40,17 +30,12 @@ export default function InfiniteLoopSyncTest() {
         threshold to stop the freeze.
       </p>
       <button
-        onClick={handleClick}
+        onClick={() => setActive(true)}
         className="px-3.5 py-1.5 bg-rose-500 hover:bg-rose-600 active:bg-rose-700 text-white text-sm font-medium rounded cursor-pointer"
       >
         Trigger sync loop
       </button>
       {active && <InfiniteLooper active={active} />}
-      {error && (
-        <div className="mt-2 p-2 bg-rose-50 border border-rose-200 rounded text-xs text-rose-700 font-mono">
-          {error}
-        </div>
-      )}
     </div>
   );
 }

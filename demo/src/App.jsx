@@ -7,6 +7,8 @@ import FlushSyncTest from './scenarios/FlushSyncTest';
 import CascadeTest from './scenarios/CascadeTest';
 import InfiniteLoopSyncTest from './scenarios/InfiniteLoopSyncTest';
 import InfiniteLoopAsyncTest from './scenarios/InfiniteLoopAsyncTest';
+import InfiniteLoopHybridTest from './scenarios/InfiniteLoopHybridTest';
+import InfiniteLoopErrorBoundary from './scenarios/InfiniteLoopErrorBoundary';
 
 export default function App() {
   return (
@@ -17,8 +19,15 @@ export default function App() {
       <HappyPathTest />
       <FlushSyncTest />
       <CascadeTest />
-      <InfiniteLoopSyncTest />
-      <InfiniteLoopAsyncTest />
+      <InfiniteLoopErrorBoundary title="Infinite loop (sync)" pattern="infinite-loop-sync">
+        <InfiniteLoopSyncTest />
+      </InfiniteLoopErrorBoundary>
+      <InfiniteLoopErrorBoundary title="Infinite loop (async)" pattern="infinite-loop-async">
+        <InfiniteLoopAsyncTest />
+      </InfiniteLoopErrorBoundary>
+      <InfiniteLoopErrorBoundary title="Infinite loop (hybrid)" pattern="infinite-loop-sync">
+        <InfiniteLoopHybridTest />
+      </InfiniteLoopErrorBoundary>
     </div>
   );
 }

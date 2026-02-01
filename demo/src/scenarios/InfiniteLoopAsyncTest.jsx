@@ -15,25 +15,6 @@ function AsyncLooper({ active }) {
 
 export default function InfiniteLoopAsyncTest() {
   const [active, setActive] = useState(false);
-  const [error, setError] = useState(null);
-
-  const handleClick = () => {
-    setError(null);
-    setActive(true);
-  };
-
-  // Listen for uncaught InfiniteLoopError
-  React.useEffect(() => {
-    const handler = (event) => {
-      if (event.error?.name === 'InfiniteLoopError') {
-        event.preventDefault();
-        setError(event.error.message);
-        setActive(false);
-      }
-    };
-    window.addEventListener('error', handler);
-    return () => window.removeEventListener('error', handler);
-  }, []);
 
   return (
     <div className="bg-white rounded-lg p-4 shadow-sm">
@@ -49,17 +30,12 @@ export default function InfiniteLoopAsyncTest() {
         within the time window.
       </p>
       <button
-        onClick={handleClick}
+        onClick={() => setActive(true)}
         className="px-3.5 py-1.5 bg-rose-500 hover:bg-rose-600 active:bg-rose-700 text-white text-sm font-medium rounded cursor-pointer"
       >
         Trigger async loop
       </button>
       {active && <AsyncLooper active={active} />}
-      {error && (
-        <div className="mt-2 p-2 bg-rose-50 border border-rose-200 rounded text-xs text-rose-700 font-mono">
-          {error}
-        </div>
-      )}
     </div>
   );
 }

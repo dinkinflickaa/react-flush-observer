@@ -467,8 +467,10 @@ describe('createDetector', () => {
       }, 0);
     });
 
-    test('async throw mode throws InfiniteLoopError', (done) => {
+    test('async throw mode disposes and delivers report via microtask', (done) => {
+      const onDetection = jest.fn();
       const detector = tracked({
+        onDetection,
         sampleRate: 1.0,
         maxCommitsPerTask: 1000,
         maxCommitsPerWindow: 3,
@@ -485,10 +487,24 @@ describe('createDetector', () => {
 
       setTimeout(() => {
         now += 10;
-        expect(() => {
+        // 3rd commit triggers async detection — disposes but does NOT throw
+        // (throwing from onCommitFiberRoot is swallowed by React)
+        detector.handleCommit(makeLayoutEffectRoot());
+
+        // onDetection delivered via queueMicrotask — flush with a microtask
+        queueMicrotask(() => {
+          const loopDetections = onDetection.mock.calls.filter(
+            c => c[0].type === 'infinite-loop'
+          );
+          expect(loopDetections.length).toBe(1);
+          expect(loopDetections[0][0].pattern).toBe('infinite-loop-async');
+
+          // Detector is disposed — subsequent commits are no-ops
+          now += 10;
           detector.handleCommit(makeLayoutEffectRoot());
-        }).toThrow(InfiniteLoopError);
-        done();
+          expect(onDetection.mock.calls.filter(c => c[0].type === 'infinite-loop').length).toBe(1);
+          done();
+        });
       }, 0);
     });
 
