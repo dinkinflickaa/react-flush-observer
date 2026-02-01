@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
+import { InfiniteLoopError } from 'react-flush-observer';
 
 export default class InfiniteLoopErrorBoundary extends React.Component {
   constructor(props) {
@@ -29,9 +30,7 @@ export default class InfiniteLoopErrorBoundary extends React.Component {
       // continues because the child keeps re-rendering.
       ReactDOM.flushSync(() => {
         this.setState({
-          error: new Error(
-            `React infinite loop detected: ${detection.commitCount} commits (pattern: ${detection.pattern})`
-          ),
+          error: new InfiniteLoopError(detection),
         });
       });
     }
@@ -53,7 +52,7 @@ export default class InfiniteLoopErrorBoundary extends React.Component {
           </h2>
           <div className="mt-2 p-3 bg-rose-50 border border-rose-200 rounded">
             <p className="text-xs font-semibold text-rose-800 mb-1">
-              {this.state.error.name || 'InfiniteLoopError'}
+              {this.state.error.name}
             </p>
             <p className="text-xs text-rose-700 font-mono mb-3">
               {this.state.error.message}

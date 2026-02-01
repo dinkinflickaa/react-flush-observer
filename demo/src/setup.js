@@ -19,7 +19,7 @@ install({
     }
   },
   maxCommitsPerTask: 50,
-  onInfiniteLoop: 'throw',
+  onInfiniteLoop: 'break',
 });
 
 // Dynamically import the app AFTER the hook is installed
