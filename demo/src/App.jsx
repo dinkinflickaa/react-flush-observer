@@ -5,6 +5,8 @@ import SetStateOutsideTest from './scenarios/SetStateOutsideTest';
 import HappyPathTest from './scenarios/HappyPathTest';
 import FlushSyncTest from './scenarios/FlushSyncTest';
 import CascadeTest from './scenarios/CascadeTest';
+import InfiniteLoopSyncTest from './scenarios/InfiniteLoopSyncTest';
+import InfiniteLoopAsyncTest from './scenarios/InfiniteLoopAsyncTest';
 
 export default function App() {
   return (
@@ -15,6 +17,8 @@ export default function App() {
       <HappyPathTest />
       <FlushSyncTest />
       <CascadeTest />
+      <InfiniteLoopSyncTest />
+      <InfiniteLoopAsyncTest />
     </div>
   );
 }

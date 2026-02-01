@@ -19,6 +19,16 @@ const PATTERN_STYLES = {
     border: 'border-red-400',
     label: 'Outside React',
   },
+  'infinite-loop-sync': {
+    bg: 'bg-rose-50',
+    border: 'border-rose-600',
+    label: 'Infinite Loop (Sync)',
+  },
+  'infinite-loop-async': {
+    bg: 'bg-rose-50',
+    border: 'border-rose-600',
+    label: 'Infinite Loop (Async)',
+  },
 };
 
 export function initLog(el) {
@@ -149,6 +159,13 @@ export function appendDetection(detection) {
   meta.textContent = `${detection.flushedEffectsCount} effect(s) flushed · ${detection.blockingDurationMs.toFixed(2)}ms blocking · ${new Date(detection.timestamp).toLocaleTimeString()}`;
 
   entry.appendChild(meta);
+
+  if (detection.type === 'infinite-loop') {
+    const loopMeta = document.createElement('span');
+    loopMeta.className = 'text-rose-600 text-xs font-semibold block mt-0.5';
+    loopMeta.textContent = `${detection.commitCount} commits detected`;
+    entry.appendChild(loopMeta);
+  }
 
   logBody.prepend(entry);
 }
