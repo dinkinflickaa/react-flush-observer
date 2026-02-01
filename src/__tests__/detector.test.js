@@ -5,6 +5,7 @@ if (typeof globalThis.MessageChannel === 'undefined') {
 }
 
 const { createDetector } = require('../detector');
+const { InfiniteLoopError } = require('../errors');
 const {
   FunctionComponent,
   SuspenseComponent,
@@ -118,12 +119,16 @@ describe('createDetector', () => {
 
     detector.handleCommit(makeLayoutEffectRoot());
 
-    // Wait for MessageChannel to fire (next task)
+    // Wait for MessageChannel to fire (next task).
+    // Use a small delay to ensure the MessageChannel message is delivered
+    // before we check, since jsdom's event loop ordering may differ from browsers.
     setTimeout(() => {
-      detector.handleCommit(makeLayoutEffectRoot());
-      // Second commit is in a new task, should not trigger detection
-      expect(onDetection).not.toHaveBeenCalled();
-      done();
+      setTimeout(() => {
+        detector.handleCommit(makeLayoutEffectRoot());
+        // Second commit is in a new task, should not trigger detection
+        expect(onDetection).not.toHaveBeenCalled();
+        done();
+      }, 0);
     }, 0);
   });
 
@@ -193,5 +198,190 @@ describe('createDetector', () => {
 
     expect(onDetection).toHaveBeenCalledTimes(1);
     expect(onDetection.mock.calls[0][0].pattern).toBe('lazy-in-render');
+  });
+
+  describe('sync infinite loop detection', () => {
+    test('throws InfiniteLoopError when commits in one task exceed maxCommitsPerTask', () => {
+      const onDetection = jest.fn();
+      const detector = tracked({
+        onDetection,
+        sampleRate: 1.0,
+        maxCommitsPerTask: 5,
+        onInfiniteLoop: 'throw',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      // First 5 commits (including first) should not throw
+      for (let i = 0; i < 5; i++) {
+        detector.handleCommit(makeLayoutEffectRoot());
+        now += 1;
+      }
+
+      // 6th commit should throw (exceeds maxCommitsPerTask of 5)
+      expect(() => {
+        now += 1;
+        detector.handleCommit(makeLayoutEffectRoot());
+      }).toThrow(InfiniteLoopError);
+    });
+
+    test('does not throw when commits stay below maxCommitsPerTask', () => {
+      const detector = tracked({
+        sampleRate: 1.0,
+        maxCommitsPerTask: 5,
+        onInfiniteLoop: 'throw',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      // 5 commits total (4 extra) — exactly at threshold but not over
+      for (let i = 0; i < 5; i++) {
+        now += 1;
+        detector.handleCommit(makeLayoutEffectRoot());
+      }
+      // Should not throw — 4 extra commits, threshold is 5
+    });
+
+    test('report mode fires onDetection without throwing', () => {
+      const onDetection = jest.fn();
+      const detector = tracked({
+        onDetection,
+        sampleRate: 1.0,
+        maxCommitsPerTask: 5,
+        onInfiniteLoop: 'report',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      for (let i = 0; i < 6; i++) {
+        now += 1;
+        detector.handleCommit(makeLayoutEffectRoot());
+      }
+
+      // Should have been called — once for loop detection, plus normal forced-flush detections
+      const loopDetections = onDetection.mock.calls.filter(
+        c => c[0].type === 'infinite-loop'
+      );
+      expect(loopDetections.length).toBe(1);
+      expect(loopDetections[0][0].pattern).toBe('infinite-loop-sync');
+      expect(loopDetections[0][0].commitCount).toBe(6);
+    });
+
+    test('thrown InfiniteLoopError has structured report', () => {
+      const detector = tracked({
+        sampleRate: 1.0,
+        maxCommitsPerTask: 3,
+        onInfiniteLoop: 'throw',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      let caught;
+      try {
+        for (let i = 0; i < 5; i++) {
+          now += 1;
+          detector.handleCommit(makeLayoutEffectRoot());
+        }
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(InfiniteLoopError);
+      expect(caught.report.type).toBe('infinite-loop');
+      expect(caught.report.pattern).toBe('infinite-loop-sync');
+      expect(caught.report.commitCount).toBeGreaterThanOrEqual(4);
+      expect(caught.report.stack).toBeDefined();
+    });
+
+    test('throw mode schedules onDetection via setTimeout', (done) => {
+      const onDetection = jest.fn();
+      const detector = tracked({
+        onDetection,
+        sampleRate: 1.0,
+        maxCommitsPerTask: 3,
+        onInfiniteLoop: 'throw',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      try {
+        for (let i = 0; i < 5; i++) {
+          now += 1;
+          detector.handleCommit(makeLayoutEffectRoot());
+        }
+      } catch (e) {
+        // Expected throw
+      }
+
+      // onDetection should NOT have been called synchronously for the loop
+      const loopDetections = onDetection.mock.calls.filter(
+        c => c[0].type === 'infinite-loop'
+      );
+      expect(loopDetections.length).toBe(0);
+
+      // But it should be called async via setTimeout
+      setTimeout(() => {
+        const asyncLoopDetections = onDetection.mock.calls.filter(
+          c => c[0].type === 'infinite-loop'
+        );
+        expect(asyncLoopDetections.length).toBe(1);
+        done();
+      }, 0);
+    });
+
+    test('sync loop counter resets at task boundary', (done) => {
+      const detector = tracked({
+        sampleRate: 1.0,
+        maxCommitsPerTask: 5,
+        onInfiniteLoop: 'throw',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      // 3 commits in first task
+      for (let i = 0; i < 3; i++) {
+        now += 1;
+        detector.handleCommit(makeLayoutEffectRoot());
+      }
+
+      // Wait for task boundary (MessageChannel flush)
+      setTimeout(() => {
+        // 3 more commits in new task — should NOT throw (counter reset)
+        for (let i = 0; i < 3; i++) {
+          now += 1;
+          detector.handleCommit(makeLayoutEffectRoot());
+        }
+        done();
+      }, 0);
+    });
+
+    test('report mode spam guard: only fires once per task', () => {
+      const onDetection = jest.fn();
+      const detector = tracked({
+        onDetection,
+        sampleRate: 1.0,
+        maxCommitsPerTask: 3,
+        onInfiniteLoop: 'report',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      for (let i = 0; i < 10; i++) {
+        now += 1;
+        detector.handleCommit(makeLayoutEffectRoot());
+      }
+
+      const loopDetections = onDetection.mock.calls.filter(
+        c => c[0].type === 'infinite-loop'
+      );
+      expect(loopDetections.length).toBe(1);
+    });
   });
 });
