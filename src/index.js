@@ -30,10 +30,6 @@ function install(config = {}) {
       try {
         detector.handleCommit(root);
       } catch (e) {
-        if (e instanceof InfiniteLoopError) {
-          existingHook?.onCommitFiberRoot?.(id, root, priority, didError);
-          throw e;
-        }
         // Observability must never break the observed application
       }
       existingHook?.onCommitFiberRoot?.(id, root, priority, didError);

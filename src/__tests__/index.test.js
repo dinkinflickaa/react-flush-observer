@@ -5,8 +5,6 @@ if (typeof globalThis.MessageChannel === 'undefined') {
 }
 
 const { install } = require('../index');
-const { InfiniteLoopError } = require('../errors');
-
 describe('install', () => {
   let originalHook;
   let uninstallFns;
@@ -160,11 +158,11 @@ describe('install', () => {
     performance.now = origNow;
   });
 
-  test('InfiniteLoopError propagates through onCommitFiberRoot', () => {
+  test('break mode freezes root.pendingLanes through onCommitFiberRoot', () => {
     delete window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
     const uninstall = install({
       maxCommitsPerTask: 3,
-      onInfiniteLoop: 'throw',
+      onInfiniteLoop: 'break',
     });
     uninstallFns.push(uninstall);
 
@@ -173,6 +171,7 @@ describe('install', () => {
     performance.now = () => now;
 
     const root = {
+      pendingLanes: 1,
       current: {
         tag: 0, type: function Test() {}, flags: 36, subtreeFlags: 36,
         lanes: 0, childLanes: 0, sibling: null,
@@ -180,12 +179,14 @@ describe('install', () => {
       },
     };
 
-    expect(() => {
-      for (let i = 0; i < 5; i++) {
-        now += 1;
-        window.__REACT_DEVTOOLS_GLOBAL_HOOK__.onCommitFiberRoot(1, root, 0, false);
-      }
-    }).toThrow(InfiniteLoopError);
+    // Should NOT throw — break mode freezes pendingLanes instead
+    for (let i = 0; i < 5; i++) {
+      now += 1;
+      window.__REACT_DEVTOOLS_GLOBAL_HOOK__.onCommitFiberRoot(1, root, 0, false);
+    }
+
+    // root.pendingLanes is frozen to 0
+    expect(root.pendingLanes).toBe(0);
 
     performance.now = origNow;
   });
