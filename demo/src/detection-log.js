@@ -156,16 +156,20 @@ export function appendDetection(detection) {
 
   const meta = document.createElement('span');
   meta.className = 'text-gray-400 text-[11px] block mt-0.5';
-  meta.textContent = `${detection.flushedEffectsCount} effect(s) flushed · ${detection.blockingDurationMs.toFixed(2)}ms blocking · ${new Date(detection.timestamp).toLocaleTimeString()}`;
-
-  entry.appendChild(meta);
 
   if (detection.type === 'infinite-loop') {
+    const windowInfo = detection.windowMs != null ? ` in ${detection.windowMs.toFixed(0)}ms` : '';
+    meta.textContent = `${detection.commitCount} commits${windowInfo} · ${new Date(detection.timestamp).toLocaleTimeString()}`;
+
     const loopMeta = document.createElement('span');
     loopMeta.className = 'text-rose-600 text-xs font-semibold block mt-0.5';
-    loopMeta.textContent = `${detection.commitCount} commits detected`;
+    loopMeta.textContent = `⚠ Infinite loop detected (${detection.pattern})`;
     entry.appendChild(loopMeta);
+  } else {
+    meta.textContent = `${detection.flushedEffectsCount} effect(s) flushed · ${detection.blockingDurationMs.toFixed(2)}ms blocking · ${new Date(detection.timestamp).toLocaleTimeString()}`;
   }
+
+  entry.appendChild(meta);
 
   logBody.prepend(entry);
 }

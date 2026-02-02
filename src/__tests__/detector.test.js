@@ -485,7 +485,7 @@ describe('createDetector', () => {
       }, 0);
     });
 
-    test('break mode disposes and delivers report via setTimeout', (done) => {
+    test('break mode delivers report via setTimeout without disposing', (done) => {
       const onDetection = jest.fn();
       const detector = tracked({
         onDetection,
@@ -505,7 +505,7 @@ describe('createDetector', () => {
 
       setTimeout(() => {
         now += 10;
-        // 3rd commit triggers async detection — disposes, does NOT freeze
+        // 3rd commit triggers async detection — does NOT freeze, does NOT dispose
         // (async loops are non-blocking; sync detection handles blocking cases)
         const root = makeLayoutEffectRoot();
         root.pendingLanes = 1;
@@ -522,7 +522,8 @@ describe('createDetector', () => {
           expect(loopDetections.length).toBe(1);
           expect(loopDetections[0][0].pattern).toBe('infinite-loop-async');
 
-          // Detector is disposed — subsequent commits are no-ops
+          // Observer is still alive — subsequent commits still work
+          // (asyncLoopFiredThisWindow prevents re-firing within the same window)
           now += 10;
           detector.handleCommit(makeLayoutEffectRoot());
           expect(onDetection.mock.calls.filter(c => c[0].type === 'infinite-loop').length).toBe(1);
@@ -556,6 +557,148 @@ describe('createDetector', () => {
       // Only sync should fire — guard prevents async double-fire
       expect(loopDetections.length).toBe(1);
       expect(loopDetections[0][0].pattern).toBe('infinite-loop-sync');
+    });
+  });
+
+  describe('flip-flop loop detection', () => {
+    test('freezes callbackPriority and callbackNode alongside pendingLanes', () => {
+      const detector = tracked({
+        sampleRate: 1.0,
+        maxCommitsPerTask: 5,
+        onInfiniteLoop: 'break',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      const root = makeLayoutEffectRoot();
+      root.pendingLanes = 1;
+      root.callbackPriority = 1;
+      root.callbackNode = { callback: () => {} };
+
+      // 6 commits triggers detection at commitCountInCurrentTask >= 5
+      for (let i = 0; i < 6; i++) {
+        now += 1;
+        detector.handleCommit(root);
+      }
+
+      // All three properties are frozen
+      expect(root.pendingLanes).toBe(0);
+      expect(root.callbackPriority).toBe(1); // SyncLane
+      expect(root.callbackNode).toBe(null);
+
+      // Writes are absorbed by frozen setters
+      root.pendingLanes = 42;
+      root.callbackPriority = 0;
+      root.callbackNode = { callback: () => {} };
+      expect(root.pendingLanes).toBe(0);
+      expect(root.callbackPriority).toBe(1);
+      expect(root.callbackNode).toBe(null);
+    });
+
+    test('unfreezes all three properties after setTimeout', (done) => {
+      const detector = tracked({
+        sampleRate: 1.0,
+        maxCommitsPerTask: 5,
+        onInfiniteLoop: 'break',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      const root = makeLayoutEffectRoot();
+      root.pendingLanes = 1;
+      root.callbackPriority = 2;
+      root.callbackNode = { callback: () => {} };
+
+      for (let i = 0; i < 6; i++) {
+        now += 1;
+        detector.handleCommit(root);
+      }
+
+      // Frozen immediately
+      expect(root.pendingLanes).toBe(0);
+      expect(root.callbackPriority).toBe(1);
+      expect(root.callbackNode).toBe(null);
+
+      setTimeout(() => {
+        // All properties are writable again after unfreeze
+        // pendingLanes is reset to 0 (cleared)
+        expect(root.pendingLanes).toBe(0);
+        // callbackPriority restored to its original value before freeze
+        expect(root.callbackPriority).toBe(2);
+        // callbackNode restored to its original value before freeze
+        expect(root.callbackNode).not.toBe(null);
+
+        // Confirm writes work
+        root.pendingLanes = 99;
+        root.callbackPriority = 7;
+        root.callbackNode = null;
+        expect(root.pendingLanes).toBe(99);
+        expect(root.callbackPriority).toBe(7);
+        expect(root.callbackNode).toBe(null);
+        done();
+      }, 10);
+    });
+
+    test('freeze handles roots without callbackPriority or callbackNode', () => {
+      const detector = tracked({
+        sampleRate: 1.0,
+        maxCommitsPerTask: 5,
+        onInfiniteLoop: 'break',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      // Minimal root — no callbackPriority or callbackNode properties
+      const root = makeLayoutEffectRoot();
+      root.pendingLanes = 1;
+
+      for (let i = 0; i < 6; i++) {
+        now += 1;
+        detector.handleCommit(root);
+      }
+
+      // Should still freeze all three without throwing
+      expect(root.pendingLanes).toBe(0);
+      expect(root.callbackPriority).toBe(1); // SyncLane
+      expect(root.callbackNode).toBe(null);
+    });
+
+    test('callbackPriority reset during commit does not escape freeze', () => {
+      const detector = tracked({
+        sampleRate: 1.0,
+        maxCommitsPerTask: 5,
+        onInfiniteLoop: 'break',
+      });
+
+      let now = 100;
+      performance.now = () => now;
+
+      const root = makeLayoutEffectRoot();
+      root.pendingLanes = 1;
+      root.callbackPriority = 1;
+      root.callbackNode = { callback: () => {} };
+
+      // Trigger freeze
+      for (let i = 0; i < 6; i++) {
+        now += 1;
+        detector.handleCommit(root);
+      }
+
+      // Simulate React's commitRootImpl resetting callbackPriority to NoLane (0)
+      // This is the write that causes the flip-flop escape in the unfixed version
+      root.callbackPriority = 0; // NoLane
+
+      // The frozen getter still returns SyncLane — the write was absorbed
+      expect(root.callbackPriority).toBe(1);
+
+      // Simulate ensureRootIsScheduled checking:
+      // existingCallbackPriority === newCallbackPriority → returns early → no new callback
+      const existingCallbackPriority = root.callbackPriority;
+      const newCallbackPriority = 1; // SyncLane
+      expect(existingCallbackPriority).toBe(newCallbackPriority);
     });
   });
 });

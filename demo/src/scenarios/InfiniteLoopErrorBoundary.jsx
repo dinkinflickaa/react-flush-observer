@@ -23,17 +23,27 @@ export default class InfiniteLoopErrorBoundary extends React.Component {
 
   handleLoopDetected(event) {
     const detection = event.detail;
-    if (detection.pattern === this.props.pattern) {
-      // flushSync forces React to synchronously process this state update,
-      // unmounting the looping child BEFORE React's scheduler fires the next
-      // render.  Without flushSync, React batches the update and the loop
-      // continues because the child keeps re-rendering.
-      ReactDOM.flushSync(() => {
-        this.setState({
-          error: new InfiniteLoopError(detection),
-        });
-      });
+    if (detection.pattern !== this.props.pattern) return;
+
+    // When suspects is provided, check that at least one suspect name
+    // from the detection report matches this boundary's suspects list.
+    // When omitted, fall back to pattern-only matching (backward compatible).
+    const { suspects } = this.props;
+    if (suspects) {
+      const reportSuspects = detection.suspects || [];
+      const match = reportSuspects.some(name => suspects.includes(name));
+      if (!match) return;
     }
+
+    // flushSync forces React to synchronously process this state update,
+    // unmounting the looping child BEFORE React's scheduler fires the next
+    // render.  Without flushSync, React batches the update and the loop
+    // continues because the child keeps re-rendering.
+    ReactDOM.flushSync(() => {
+      this.setState({
+        error: new InfiniteLoopError(detection),
+      });
+    });
   }
 
   handleReload = () => {

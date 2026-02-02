@@ -4,7 +4,7 @@ function InfiniteLooper({ active }) {
   const [count, setCount] = useState(0);
 
   useLayoutEffect(() => {
-    if (active) {
+    if (active && count < 1000) {
       // Unconditional setState in layout effect = synchronous infinite loop
       setCount(c => c + 1);
     }

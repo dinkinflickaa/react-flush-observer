@@ -4,7 +4,7 @@ function AsyncLooper({ active }) {
   const [count, setCount] = useState(0);
 
   useEffect(() => {
-    if (active) {
+    if (active && count < 1000) {
       // Unconditional setState in passive effect = async infinite loop
       setCount(c => c + 1);
     }

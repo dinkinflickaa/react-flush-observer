@@ -1,12 +1,47 @@
 const { snapshotCommitFibers } = require('./walker');
 const { classifyPattern } = require('./classifier');
 const { parseUserFrame } = require('./stack-parser');
-const { InfiniteLoopError } = require('./errors');
 const {
   DEFAULT_MAX_COMMITS_PER_TASK,
   DEFAULT_MAX_COMMITS_PER_WINDOW,
   DEFAULT_WINDOW_MS,
 } = require('./constants');
+
+const SyncLane = 1;
+
+function freezeRootLanes(root) {
+  root.__frozenOriginals = {
+    pendingLanes: root.pendingLanes,
+    callbackPriority: root.callbackPriority,
+    callbackNode: root.callbackNode,
+  };
+  Object.defineProperty(root, 'pendingLanes', {
+    get: () => 0,
+    set: () => {},
+    configurable: true,
+  });
+  Object.defineProperty(root, 'callbackPriority', {
+    get: () => SyncLane,
+    set: () => {},
+    configurable: true,
+  });
+  Object.defineProperty(root, 'callbackNode', {
+    get: () => null,
+    set: () => {},
+    configurable: true,
+  });
+}
+
+function unfreezeRootLanes(root) {
+  const originals = root.__frozenOriginals;
+  delete root.pendingLanes;
+  delete root.callbackPriority;
+  delete root.callbackNode;
+  root.pendingLanes = 0;
+  root.callbackPriority = originals?.callbackPriority ?? 0;
+  root.callbackNode = originals?.callbackNode ?? null;
+  delete root.__frozenOriginals;
+}
 
 function createDetector(config = {}) {
   const {
@@ -15,7 +50,7 @@ function createDetector(config = {}) {
     maxCommitsPerTask = DEFAULT_MAX_COMMITS_PER_TASK,
     maxCommitsPerWindow = DEFAULT_MAX_COMMITS_PER_WINDOW,
     windowMs = DEFAULT_WINDOW_MS,
-    onInfiniteLoop = 'throw',
+    onInfiniteLoop = 'break',
   } = config;
 
   const state = {
@@ -58,12 +93,22 @@ function createDetector(config = {}) {
       // Best-effort
     }
 
+    // Extract suspect component names from forcedCommit fibers
+    const seen = new Set();
+    const suspects = [
+      ...forcedFibers.withLayoutEffects,
+      ...forcedFibers.withPassiveEffects,
+    ]
+      .map(f => f.ownerName)
+      .filter(name => name && !seen.has(name) && seen.add(name));
+
     return {
       type: 'infinite-loop',
       pattern,
       commitCount,
       windowMs: windowDuration,
       stack,
+      suspects,
       triggeringCommit: triggeringFibers,
       forcedCommit: forcedFibers,
       userFrame,
@@ -73,27 +118,30 @@ function createDetector(config = {}) {
 
   function handleLoopDetection(root, pattern, commitCount, windowDuration) {
     const report = buildLoopReport(root, pattern, commitCount, windowDuration);
-    const isSync = pattern === 'infinite-loop-sync';
 
-    if (onInfiniteLoop === 'throw') {
-      if (isSync) {
-        // Sync: throw unwinds the synchronous cascade; deliver report after unwind
-        dispose();
-        if (onDetection) {
-          setTimeout(() => onDetection(report), 0);
-        }
-        throw new InfiniteLoopError(report);
-      } else {
-        // Async: throwing from onCommitFiberRoot can't stop a scheduler-driven
-        // loop — React catches devtools-hook errors internally.  Instead,
-        // dispose and deliver the report via microtask.  Microtasks run before
-        // the next macrotask (React's scheduler), giving consumers time to
-        // force-unmount the subtree (e.g. via ReactDOM.flushSync).
-        dispose();
-        if (onDetection) {
-          queueMicrotask(() => onDetection(report));
-        }
+    if (onInfiniteLoop === 'break') {
+      // For sync blocking loops, freeze root.pendingLanes so React's
+      // getNextLanes() returns NoLanes and performSyncWorkOnRoot bails out.
+      // The freeze prevents further commits, so handleCommit won't be called
+      // during the freeze. The MessageChannel naturally resets counters when
+      // the sync cascade unwinds. After setTimeout unfreezes the root and
+      // delivers the report, the observer is ready for the next interaction.
+      if (pattern === 'infinite-loop-sync') {
+        freezeRootLanes(root);
+        // Reset async window state so the loop's commit count doesn't bleed
+        // into post-recovery commits (e.g. error boundary flushSync).
+        state.windowCommitCount = 0;
+        state.windowStartTime = 0;
+        state.asyncLoopFiredThisWindow = false;
       }
+      // After the synchronous cascade unwinds and the event loop resumes,
+      // unfreeze the root and deliver the report.
+      setTimeout(() => {
+        if (pattern === 'infinite-loop-sync') {
+          unfreezeRootLanes(root);
+        }
+        onDetection?.(report);
+      }, 0);
     } else {
       // report mode
       onDetection?.(report);
