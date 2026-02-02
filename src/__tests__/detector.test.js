@@ -625,8 +625,9 @@ describe('createDetector', () => {
         // All properties are writable again after unfreeze
         // pendingLanes is reset to 0 (cleared)
         expect(root.pendingLanes).toBe(0);
-        // callbackPriority restored to its original value before freeze
-        expect(root.callbackPriority).toBe(2);
+        // callbackPriority reset to NoLane (0) so ensureRootIsScheduled
+        // won't see a stale priority match and skip scheduling
+        expect(root.callbackPriority).toBe(0);
         // callbackNode restored to its original value before freeze
         expect(root.callbackNode).not.toBe(null);
 

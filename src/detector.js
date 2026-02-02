@@ -38,7 +38,11 @@ function unfreezeRootLanes(root) {
   delete root.callbackPriority;
   delete root.callbackNode;
   root.pendingLanes = 0;
-  root.callbackPriority = originals?.callbackPriority ?? 0;
+  // Always reset to NoLane (0) so ensureRootIsScheduled won't see a stale
+  // priority match and skip scheduling.  The original SyncLane callback was
+  // consumed during the loop, so restoring it would trick React into
+  // thinking sync work is already scheduled when it isn't.
+  root.callbackPriority = 0;
   root.callbackNode = originals?.callbackNode ?? null;
   delete root.__frozenOriginals;
 }
