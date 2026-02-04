@@ -12,4 +12,9 @@ export default defineConfig({
   optimizeDeps: {
     include: ['react-flush-observer'],
   },
+  build: {
+    commonjsOptions: {
+      include: [/react-flush-observer/, /node_modules/],
+    },
+  },
 });

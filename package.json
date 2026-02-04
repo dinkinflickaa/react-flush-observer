@@ -1,10 +1,31 @@
 {
   "name": "react-flush-observer",
   "version": "0.1.0",
-  "private": true,
+  "description": "Detect synchronous re-renders and infinite loops in React applications",
   "main": "src/index.js",
+  "files": [
+    "src/**/*.js",
+    "!src/__tests__"
+  ],
   "scripts": {
     "test": "jest"
+  },
+  "keywords": [
+    "react",
+    "devtools",
+    "performance",
+    "debugging",
+    "infinite-loop",
+    "flush-sync"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dinkinflickaa/react-flush-observer.git"
+  },
+  "peerDependencies": {
+    "react": ">=16.8.0"
   },
   "devDependencies": {
     "jest": "^29.7.0",

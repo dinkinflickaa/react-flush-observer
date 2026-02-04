@@ -18,6 +18,8 @@ install({
       );
     }
   },
+  maxCommitsPerTask: 1000,
+  maxCommitsPerWindow: 1000,
   onInfiniteLoop: "break",
 });
 
