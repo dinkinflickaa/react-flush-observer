@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      'react-flush-observer': path.resolve(__dirname, '../src/index.js'),
+      'react-flush-observer': path.resolve(__dirname, '../dist/index.js'),
     },
   },
   optimizeDeps: {

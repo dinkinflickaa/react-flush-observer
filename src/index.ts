@@ -1,7 +1,21 @@
-const { createDetector } = require('./detector');
-const { InfiniteLoopError } = require('./errors');
+import type { InstallConfig, FiberRoot, Fiber, ReactInternals } from './types';
+import { createDetector } from './detector';
 
-function install(config = {}) {
+export { InfiniteLoopError } from './errors';
+export type {
+  InstallConfig,
+  DetectorConfig,
+  Report,
+  DetectionReport,
+  LoopReport,
+  FiberSnapshot,
+  SourceInfo,
+  FiberInfo,
+  DetailedFiberInfo,
+  InfiniteLoopAction,
+} from './types';
+
+export function install(config: InstallConfig = {}): () => void {
   const {
     sampleRate = 1.0,
     onDetection = null,
@@ -23,29 +37,32 @@ function install(config = {}) {
 
   window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
     supportsFiber: true,
-    inject(internals) {
+    inject(internals: ReactInternals): number {
       return existingHook?.inject?.(internals) ?? 1;
     },
-    onCommitFiberRoot(id, root, priority, didError) {
+    onCommitFiberRoot(
+      id: number,
+      root: FiberRoot,
+      priority: number,
+      didError: boolean
+    ): void {
       try {
         detector.handleCommit(root);
-      } catch (e) {
+      } catch {
         // Observability must never break the observed application
       }
       existingHook?.onCommitFiberRoot?.(id, root, priority, didError);
     },
-    onPostCommitFiberRoot(id, root) {
+    onPostCommitFiberRoot(id: number, root: FiberRoot): void {
       existingHook?.onPostCommitFiberRoot?.(id, root);
     },
-    onCommitFiberUnmount(id, fiber) {
+    onCommitFiberUnmount(id: number, fiber: Fiber): void {
       existingHook?.onCommitFiberUnmount?.(id, fiber);
     },
   };
 
-  return function uninstall() {
+  return function uninstall(): void {
     detector.dispose();
     window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = existingHook;
   };
 }
-
-module.exports = { install, InfiniteLoopError };

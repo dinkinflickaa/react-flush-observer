@@ -1,4 +1,4 @@
-const {
+import {
   FunctionComponent,
   ClassComponent,
   SuspenseComponent,
@@ -12,7 +12,7 @@ const {
   DEFAULT_MAX_COMMITS_PER_TASK,
   DEFAULT_MAX_COMMITS_PER_WINDOW,
   DEFAULT_WINDOW_MS,
-} = require('../constants');
+} from '../constants';
 
 describe('constants', () => {
   test('fiber tags are correct numeric values', () => {

@@ -1,4 +1,4 @@
-const { parseUserFrame } = require('../stack-parser');
+import { parseUserFrame } from '../stack-parser';
 
 describe('parseUserFrame', () => {
   test('extracts first user-code frame from a V8 stack string', () => {
@@ -63,8 +63,8 @@ describe('parseUserFrame', () => {
     expect(parseUserFrame(stack)).toBeNull();
   });
 
-  test('returns null for undefined or empty stack', () => {
-    expect(parseUserFrame(undefined)).toBeNull();
+  test('returns null for null or empty stack', () => {
+    expect(parseUserFrame(null)).toBeNull();
     expect(parseUserFrame('')).toBeNull();
   });
 

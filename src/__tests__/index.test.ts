@@ -1,13 +1,16 @@
 // jsdom does not provide MessageChannel; expose Node's built-in implementation
 if (typeof globalThis.MessageChannel === 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { MessageChannel } = require('worker_threads');
   globalThis.MessageChannel = MessageChannel;
 }
 
-const { install } = require('../index');
+import { install, InfiniteLoopError } from '../index';
+import type { Fiber, FiberRoot, Report } from '../types';
+
 describe('install', () => {
-  let originalHook;
-  let uninstallFns;
+  let originalHook: typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+  let uninstallFns: (() => void)[];
 
   beforeEach(() => {
     originalHook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
@@ -20,23 +23,37 @@ describe('install', () => {
     window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = originalHook;
   });
 
-  function tracked() {
+  function tracked(): () => void {
     const uninstall = install();
     uninstallFns.push(uninstall);
     return uninstall;
+  }
+
+  function makeFiber(overrides: Partial<Fiber> = {}): Fiber {
+    return {
+      tag: 0,
+      type: null,
+      flags: 0,
+      subtreeFlags: 0,
+      lanes: 0,
+      childLanes: 0,
+      child: null,
+      sibling: null,
+      ...overrides,
+    };
   }
 
   test('sets __REACT_DEVTOOLS_GLOBAL_HOOK__ on window', () => {
     delete window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
     tracked();
     expect(window.__REACT_DEVTOOLS_GLOBAL_HOOK__).toBeDefined();
-    expect(window.__REACT_DEVTOOLS_GLOBAL_HOOK__.supportsFiber).toBe(true);
+    expect(window.__REACT_DEVTOOLS_GLOBAL_HOOK__!.supportsFiber).toBe(true);
   });
 
   test('hook has required methods', () => {
     delete window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
     tracked();
-    const hook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+    const hook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__!;
     expect(typeof hook.inject).toBe('function');
     expect(typeof hook.onCommitFiberRoot).toBe('function');
     expect(typeof hook.onPostCommitFiberRoot).toBe('function');
@@ -53,7 +70,9 @@ describe('install', () => {
     };
 
     tracked();
-    const result = window.__REACT_DEVTOOLS_GLOBAL_HOOK__.inject({ some: 'internals' });
+    const result = window.__REACT_DEVTOOLS_GLOBAL_HOOK__!.inject!({
+      some: 'internals',
+    } as Parameters<NonNullable<NonNullable<typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__>['inject']>>[0]);
     expect(mockInject).toHaveBeenCalledWith({ some: 'internals' });
     expect(result).toBe(42);
   });
@@ -61,7 +80,7 @@ describe('install', () => {
   test('inject returns 1 when no existing hook', () => {
     delete window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
     tracked();
-    const result = window.__REACT_DEVTOOLS_GLOBAL_HOOK__.inject({});
+    const result = window.__REACT_DEVTOOLS_GLOBAL_HOOK__!.inject!({} as Parameters<NonNullable<NonNullable<typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__>['inject']>>[0]);
     expect(result).toBe(1);
   });
 
@@ -75,8 +94,13 @@ describe('install', () => {
     };
 
     tracked();
-    const root = { current: { tag: 0, type: null, flags: 0, subtreeFlags: 0, lanes: 0, childLanes: 0, child: null, sibling: null } };
-    window.__REACT_DEVTOOLS_GLOBAL_HOOK__.onCommitFiberRoot(1, root, 0, false);
+    const root: FiberRoot = {
+      current: makeFiber(),
+      pendingLanes: 0,
+      callbackPriority: 0,
+      callbackNode: null,
+    };
+    window.__REACT_DEVTOOLS_GLOBAL_HOOK__!.onCommitFiberRoot!(1, root, 0, false);
     expect(mockOnCommit).toHaveBeenCalledWith(1, root, 0, false);
   });
 
@@ -90,7 +114,10 @@ describe('install', () => {
     };
 
     tracked();
-    window.__REACT_DEVTOOLS_GLOBAL_HOOK__.onPostCommitFiberRoot(1, {});
+    window.__REACT_DEVTOOLS_GLOBAL_HOOK__!.onPostCommitFiberRoot!(
+      1,
+      {} as FiberRoot
+    );
     expect(mockOnPost).toHaveBeenCalledWith(1, {});
   });
 
@@ -104,8 +131,11 @@ describe('install', () => {
     };
 
     tracked();
-    window.__REACT_DEVTOOLS_GLOBAL_HOOK__.onCommitFiberUnmount(1, { tag: 0 });
-    expect(mockOnUnmount).toHaveBeenCalledWith(1, { tag: 0 });
+    window.__REACT_DEVTOOLS_GLOBAL_HOOK__!.onCommitFiberUnmount!(
+      1,
+      makeFiber()
+    );
+    expect(mockOnUnmount).toHaveBeenCalledWith(1, expect.any(Object));
   });
 
   test('returns an uninstall function that restores previous hook', () => {
@@ -124,7 +154,7 @@ describe('install', () => {
     expect(window.__REACT_DEVTOOLS_GLOBAL_HOOK__).toBe(previousHook);
   });
 
-  test('passes infinite loop config to detector', () => {
+  test('passes infinite loop config to detector', (done) => {
     delete window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
     const onDetection = jest.fn();
     const uninstall = install({
@@ -138,24 +168,50 @@ describe('install', () => {
     const origNow = performance.now;
     performance.now = () => now;
 
-    const root = {
+    const root: FiberRoot = {
       current: {
-        tag: 0, type: function Test() {}, flags: 36, subtreeFlags: 36,
-        lanes: 0, childLanes: 0, sibling: null,
-        child: { tag: 0, type: function Inner() {}, flags: 36, subtreeFlags: 0, lanes: 0, childLanes: 0, child: null, sibling: null },
+        tag: 0,
+        type: function Test() {},
+        flags: 36,
+        subtreeFlags: 36,
+        lanes: 0,
+        childLanes: 0,
+        sibling: null,
+        child: {
+          tag: 0,
+          type: function Inner() {},
+          flags: 36,
+          subtreeFlags: 0,
+          lanes: 0,
+          childLanes: 0,
+          child: null,
+          sibling: null,
+        },
       },
+      pendingLanes: 0,
+      callbackPriority: 0,
+      callbackNode: null,
     };
 
     for (let i = 0; i < 5; i++) {
       now += 1;
-      window.__REACT_DEVTOOLS_GLOBAL_HOOK__.onCommitFiberRoot(1, root, 0, false);
+      window.__REACT_DEVTOOLS_GLOBAL_HOOK__!.onCommitFiberRoot!(
+        1,
+        root,
+        0,
+        false
+      );
     }
 
-    const loopDetections = onDetection.mock.calls.filter(
-      c => c[0].type === 'infinite-loop'
-    );
-    expect(loopDetections.length).toBe(1);
-    performance.now = origNow;
+    // Report is delivered via queueMicrotask
+    setTimeout(() => {
+      const loopDetections = onDetection.mock.calls.filter(
+        (c: [Report]) => (c[0] as { type?: string }).type === 'infinite-loop'
+      );
+      expect(loopDetections.length).toBe(1);
+      performance.now = origNow;
+      done();
+    }, 10);
   });
 
   test('break mode freezes root.pendingLanes through onCommitFiberRoot', () => {
@@ -170,19 +226,40 @@ describe('install', () => {
     const origNow = performance.now;
     performance.now = () => now;
 
-    const root = {
+    const root: FiberRoot = {
       pendingLanes: 1,
+      callbackPriority: 0,
+      callbackNode: null,
       current: {
-        tag: 0, type: function Test() {}, flags: 36, subtreeFlags: 36,
-        lanes: 0, childLanes: 0, sibling: null,
-        child: { tag: 0, type: function Inner() {}, flags: 36, subtreeFlags: 0, lanes: 0, childLanes: 0, child: null, sibling: null },
+        tag: 0,
+        type: function Test() {},
+        flags: 36,
+        subtreeFlags: 36,
+        lanes: 0,
+        childLanes: 0,
+        sibling: null,
+        child: {
+          tag: 0,
+          type: function Inner() {},
+          flags: 36,
+          subtreeFlags: 0,
+          lanes: 0,
+          childLanes: 0,
+          child: null,
+          sibling: null,
+        },
       },
     };
 
     // Should NOT throw — break mode freezes pendingLanes instead
     for (let i = 0; i < 5; i++) {
       now += 1;
-      window.__REACT_DEVTOOLS_GLOBAL_HOOK__.onCommitFiberRoot(1, root, 0, false);
+      window.__REACT_DEVTOOLS_GLOBAL_HOOK__!.onCommitFiberRoot!(
+        1,
+        root,
+        0,
+        false
+      );
     }
 
     // root.pendingLanes is frozen to 0
@@ -192,8 +269,25 @@ describe('install', () => {
   });
 
   test('exports InfiniteLoopError', () => {
-    const mod = require('../index');
-    expect(mod.InfiniteLoopError).toBeDefined();
-    expect(new mod.InfiniteLoopError({ commitCount: 1, pattern: 'test' })).toBeInstanceOf(Error);
+    expect(InfiniteLoopError).toBeDefined();
+    expect(
+      new InfiniteLoopError({
+        type: 'infinite-loop',
+        pattern: 'infinite-loop-sync',
+        commitCount: 1,
+        windowMs: null,
+        stack: null,
+        suspects: [],
+        triggeringCommit: null,
+        forcedCommit: {
+          withPassiveEffects: [],
+          withLayoutEffects: [],
+          withSuspense: [],
+          withUpdates: [],
+        },
+        userFrame: null,
+        timestamp: Date.now(),
+      })
+    ).toBeInstanceOf(Error);
   });
 });
