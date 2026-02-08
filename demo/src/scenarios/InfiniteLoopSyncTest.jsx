@@ -1,4 +1,5 @@
 import React, { useState, useLayoutEffect } from 'react';
+import Tag from './Tags';
 
 function InfiniteLooper({ active }) {
   const [count, setCount] = useState(0);
@@ -19,15 +20,19 @@ export default function InfiniteLoopSyncTest() {
   return (
     <div className="bg-white rounded-lg p-4 shadow-sm">
       <h2 className="text-sm font-semibold">
-        Infinite loop (sync)
-        <span className="ml-1.5 inline-block text-[11px] px-2 py-0.5 rounded-full font-semibold bg-rose-100 text-rose-800">
-          infinite-loop-sync
-        </span>
+        Sync setState loop
+        <Tag type="sync" />
+        <Tag type="react-capped" />
+        <Tag type="brief-freeze" />
       </h2>
-      <p className="text-xs text-gray-500 mt-1 mb-3">
+      <p className="text-xs text-gray-500 mt-1 mb-2">
         <code className="bg-gray-100 px-1 rounded">useLayoutEffect</code> unconditionally calls setState,
-        creating a synchronous cascade. Observer throws <code className="bg-gray-100 px-1 rounded">InfiniteLoopError</code> at
-        threshold to stop the freeze.
+        creating a synchronous cascade that re-renders on every commit.
+      </p>
+      <p className="text-xs text-gray-400 mb-3">
+        React's <code className="bg-gray-100 px-1 rounded text-gray-500">NESTED_UPDATE_LIMIT</code> throws
+        after 50 nested updates via <code className="bg-gray-100 px-1 rounded text-gray-500">scheduleUpdateOnFiber</code>.
+        The browser freezes briefly but recovers.
       </p>
       <button
         onClick={() => setActive(true)}

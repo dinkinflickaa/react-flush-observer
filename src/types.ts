@@ -31,6 +31,7 @@ export interface Fiber {
   childLanes: number;
   subtreeFlags: number;
   current?: Fiber;
+  alternate?: Fiber | null;
   child: Fiber | null;
   sibling: Fiber | null;
   updateQueue?: UpdateQueue | null;
@@ -90,31 +91,35 @@ export interface FiberSnapshot {
 
 // Detection types
 
-export type DetectionPattern =
+export type FlushPattern =
   | 'setState-outside-react'
   | 'setState-in-layout-effect'
-  | 'lazy-in-render';
+  | 'lazy-in-render'
+  | 'flushSync';
 
-export type LoopPattern = 'infinite-loop-sync' | 'infinite-loop-async';
+export type LoopPattern = 'sync' | 'async';
 
 export interface ClassificationResult {
-  pattern: DetectionPattern;
+  pattern: FlushPattern;
   suspects: FiberInfo[];
   evidence: string;
 }
 
-export interface DetectionReport {
+export interface FlushReport {
+  type: 'flush';
   timestamp: number;
-  pattern: DetectionPattern;
+  pattern: FlushPattern;
   evidence: string;
   suspects: FiberInfo[];
   flushedEffectsCount: number;
   blockingDurationMs: number;
   setStateLocation?: SourceInfo | null;
+  /** First user-code frame from the commit call stack (parsed via Error().stack). */
+  userFrame: SourceInfo | null;
 }
 
 export interface LoopReport {
-  type: 'infinite-loop';
+  type: 'loop';
   pattern: LoopPattern;
   commitCount: number;
   windowMs: number | null;
@@ -126,34 +131,40 @@ export interface LoopReport {
   timestamp: number;
 }
 
-export type Report = DetectionReport | LoopReport;
+export type Report = FlushReport | LoopReport;
 
 // Config types
 
-export type InfiniteLoopAction = 'break' | 'report';
+export interface BreakOnLoopConfig {
+  sync?: boolean;
+  async?: boolean;
+}
 
 export interface InstallConfig {
+  onFlush?: (report: FlushReport) => void;
+  onLoop?: (report: LoopReport) => void;
+  breakOnLoop?: boolean | BreakOnLoopConfig;
   sampleRate?: number;
-  onDetection?: (report: Report) => void;
   maxCommitsPerTask?: number;
   maxCommitsPerWindow?: number;
   windowMs?: number;
-  onInfiniteLoop?: InfiniteLoopAction;
 }
 
 export interface DetectorConfig {
   sampleRate: number;
-  onDetection: ((report: Report) => void) | null;
+  onFlush: ((report: FlushReport) => void) | null;
+  onLoop: ((report: LoopReport) => void) | null;
+  breakOnLoop: boolean | BreakOnLoopConfig;
   maxCommitsPerTask: number;
   maxCommitsPerWindow: number;
   windowMs: number;
-  onInfiniteLoop: InfiniteLoopAction;
 }
 
 // Detector interface
 
 export interface Detector {
   handleCommit(root: FiberRoot): void;
+  setBreakOnLoop(enabled: boolean | BreakOnLoopConfig): void;
   dispose(): void;
 }
 

@@ -1,12 +1,12 @@
 import type {
   FiberRoot,
   FiberSnapshot,
+  FlushReport,
   LoopReport,
   DetectorConfig,
   Detector,
-  Report,
   LoopPattern,
-  InfiniteLoopAction,
+  BreakOnLoopConfig,
 } from './types';
 import { snapshotCommitFibers } from './walker';
 import { classifyPattern } from './classifier';
@@ -23,12 +23,16 @@ interface DetectorState {
   commitInCurrentTask: boolean;
   taskBoundaryPending: boolean;
   lastCommitTime: number;
-  lastCommitRoot: FiberRoot | null;
+  lastCommitSnapshot: FiberSnapshot | null;
   commitCountInCurrentTask: number;
   syncLoopFiredThisTask: boolean;
-  windowCommitCount: number;
-  windowStartTime: number;
-  asyncLoopFiredThisWindow: boolean;
+  flushReportsThisTask: number;
+  // Sliding window for async loop detection (ring buffer of timestamps)
+  windowTimestamps: number[];
+  windowWritePos: number;
+  windowFilled: boolean;
+  lastAsyncLoopFireTime: number;
+  lastCommitStack: string | null;
   disposed: boolean;
 }
 
@@ -100,26 +104,48 @@ function getComponentNames(snapshot: FiberSnapshot): string[] {
   return names;
 }
 
+/**
+ * Check if flushSync appears in the call stack as a standalone function name.
+ * Uses word boundary to avoid matching flushSyncCallbacks or
+ * flushSyncCallbacksOnlyInLegacyMode.  Works in production builds because
+ * React preserves the exported flushSync function name.
+ */
+function hasFlushSyncInStack(stack: string | null): boolean {
+  if (!stack) return false;
+  return /\bflushSync\b/.test(stack);
+}
+
+function resolveBreakConfig(value: boolean | BreakOnLoopConfig): { sync: boolean; async: boolean } {
+  if (typeof value === 'boolean') return { sync: value, async: value };
+  return { sync: value.sync ?? true, async: value.async ?? true };
+}
+
 export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
   const {
     sampleRate = 1.0,
-    onDetection = null,
+    onFlush = null,
+    onLoop = null,
     maxCommitsPerTask = DEFAULT_MAX_COMMITS_PER_TASK,
     maxCommitsPerWindow = DEFAULT_MAX_COMMITS_PER_WINDOW,
     windowMs = DEFAULT_WINDOW_MS,
-    onInfiniteLoop = 'break',
+    breakOnLoop: initialBreakOnLoop = true,
   } = config;
+
+  let breakConfig = resolveBreakConfig(initialBreakOnLoop);
 
   const state: DetectorState = {
     commitInCurrentTask: false,
     taskBoundaryPending: false,
     lastCommitTime: 0,
-    lastCommitRoot: null,
+    lastCommitSnapshot: null,
     commitCountInCurrentTask: 0,
     syncLoopFiredThisTask: false,
-    windowCommitCount: 0,
-    windowStartTime: 0,
-    asyncLoopFiredThisWindow: false,
+    flushReportsThisTask: 0,
+    windowTimestamps: new Array<number>(maxCommitsPerWindow),
+    windowWritePos: 0,
+    windowFilled: false,
+    lastAsyncLoopFireTime: 0,
+    lastCommitStack: null,
     disposed: false,
   };
 
@@ -131,6 +157,8 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
     state.taskBoundaryPending = false;
     state.commitCountInCurrentTask = 0;
     state.syncLoopFiredThisTask = false;
+    state.flushReportsThisTask = 0;
+    state.lastCommitStack = null;
   };
 
   function buildLoopReport(
@@ -139,9 +167,7 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
     commitCount: number,
     windowDuration: number | null
   ): LoopReport {
-    const triggeringSnapshot = state.lastCommitRoot
-      ? snapshotCommitFibers(state.lastCommitRoot)
-      : null;
+    const triggeringSnapshot = state.lastCommitSnapshot;
     const forcedSnapshot = snapshotCommitFibers(root);
 
     const stack = new Error().stack ?? null;
@@ -150,7 +176,7 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
     const suspects = getComponentNames(forcedSnapshot);
 
     return {
-      type: 'infinite-loop',
+      type: 'loop',
       pattern,
       commitCount,
       windowMs: windowDuration,
@@ -167,24 +193,24 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
     root: FiberRoot,
     pattern: LoopPattern,
     commitCount: number,
-    windowDuration: number | null,
-    action: InfiniteLoopAction
+    windowDuration: number | null
   ): void {
     const report = buildLoopReport(root, pattern, commitCount, windowDuration);
+    const shouldBreak = pattern === 'sync' ? breakConfig.sync : breakConfig.async;
 
-    if (action === 'break') {
+    if (shouldBreak) {
       // Freeze the root to prevent further commits
       freezeRootLanes(root);
 
       // Unfreeze and deliver report after current task
       setTimeout(() => {
         unfreezeRootLanes(root);
-        onDetection?.(report);
+        onLoop?.(report);
       }, 0);
     } else {
       // Just report, don't break
       queueMicrotask(() => {
-        onDetection?.(report);
+        onLoop?.(report);
       });
     }
   }
@@ -194,6 +220,20 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
 
     const now = Date.now();
 
+    // Capture call stack eagerly — stored for the NEXT commit to use as the
+    // "triggering" stack.  At forced-flush time the current commit's stack is
+    // just React internals, but the PREVIOUS commit's stack traces back through
+    // the user code that caused the cascade (e.g. the flushSync call site).
+    // Temporarily raise stackTraceLimit — the default of 10 is too shallow
+    // when our 2 frames + React internals consume most of the budget.
+    let commitStack: string | null = null;
+    if (onFlush) {
+      const prevLimit = Error.stackTraceLimit;
+      Error.stackTraceLimit = 30;
+      commitStack = new Error().stack ?? null;
+      Error.stackTraceLimit = prevLimit;
+    }
+
     // Check for sync infinite loop (too many commits in one task)
     state.commitCountInCurrentTask++;
     if (
@@ -201,67 +241,106 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
       !state.syncLoopFiredThisTask
     ) {
       state.syncLoopFiredThisTask = true;
+      // Reset the async ring buffer — it's full of timestamps from this sync
+      // loop and would falsely trigger async detection in the next task.
+      state.windowFilled = false;
+      state.windowWritePos = 0;
+      state.lastAsyncLoopFireTime = now;
       handleLoopDetection(
         root,
-        'infinite-loop-sync',
+        'sync',
         state.commitCountInCurrentTask,
-        null,
-        onInfiniteLoop
+        null
       );
       return;
     }
 
-    // Check for async infinite loop (too many commits in time window)
-    if (now - state.windowStartTime > windowMs) {
-      // Reset window
-      state.windowStartTime = now;
-      state.windowCommitCount = 1;
-      state.asyncLoopFiredThisWindow = false;
-    } else {
-      state.windowCommitCount++;
-      if (
-        state.windowCommitCount > maxCommitsPerWindow &&
-        !state.asyncLoopFiredThisWindow
-      ) {
-        state.asyncLoopFiredThisWindow = true;
+    // Check for async infinite loop (sliding window via ring buffer)
+    // Skip if sync loop already fired — the ring buffer is polluted with sync timestamps
+    if (state.windowFilled && !state.syncLoopFiredThisTask) {
+      const oldest = state.windowTimestamps[state.windowWritePos];
+      const span = now - oldest;
+      if (span < windowMs && now - state.lastAsyncLoopFireTime > windowMs) {
+        state.lastAsyncLoopFireTime = now;
         handleLoopDetection(
           root,
-          'infinite-loop-async',
-          state.windowCommitCount,
-          now - state.windowStartTime,
-          onInfiniteLoop
+          'async',
+          maxCommitsPerWindow + 1,
+          span
         );
-        return;
+        // Don't return — still record this commit in the ring buffer
       }
+    }
+    state.windowTimestamps[state.windowWritePos] = now;
+    state.windowWritePos = (state.windowWritePos + 1) % maxCommitsPerWindow;
+    if (!state.windowFilled && state.windowWritePos === 0) {
+      state.windowFilled = true;
     }
 
     // Detect forced flush (sync re-render in same task)
     const isForcedFlush = state.commitInCurrentTask;
 
-    if (isForcedFlush && Math.random() < sampleRate) {
-      const triggeringSnapshot = state.lastCommitRoot
-        ? snapshotCommitFibers(state.lastCommitRoot)
-        : snapshotCommitFibers(root);
+    // Snapshot the current commit eagerly — used both for the flush report
+    // (to identify which component is being re-rendered NOW) and stored
+    // as the triggering snapshot for the next commit.
+    const currentSnapshot = snapshotCommitFibers(root);
+
+    // Cap flush reports per task: enough for cascades (2-3), but stops flooding
+    // during sync loops where every iteration is technically a forced flush.
+    const MAX_FLUSH_REPORTS_PER_TASK = 3;
+    if (isForcedFlush && onFlush && !state.syncLoopFiredThisTask
+        && state.flushReportsThisTask < MAX_FLUSH_REPORTS_PER_TASK
+        && Math.random() < sampleRate) {
+      const triggeringSnapshot = state.lastCommitSnapshot
+        ?? currentSnapshot;
       const classification = classifyPattern(triggeringSnapshot);
 
-      const report: Report = {
-        timestamp: now,
-        pattern: classification.pattern,
-        evidence: classification.evidence,
-        suspects: classification.suspects,
-        flushedEffectsCount: triggeringSnapshot.withLayoutEffects.length,
-        blockingDurationMs: now - state.lastCommitTime,
-        setStateLocation:
-          triggeringSnapshot.withLayoutEffects[0]?.source ?? null,
-      };
+      // The classifier only sees fiber snapshots — it returns
+      // "setState-outside-react" for both flushSync and setTimeout unbatched
+      // commits (neither has layout effects).  Distinguish them via the call
+      // stack: flushSync appears as a named frame in both dev and prod builds.
+      let reportPattern = classification.pattern;
+      let reportEvidence = classification.evidence;
 
-      onDetection?.(report);
+      if (classification.pattern === 'setState-outside-react') {
+        if (hasFlushSyncInStack(commitStack) || hasFlushSyncInStack(state.lastCommitStack)) {
+          reportPattern = 'flushSync';
+          reportEvidence = 'flushSync caused synchronous re-render';
+        } else {
+          // Unbatched setTimeout in legacy mode — not a cascading nested
+          // update that blocks the frame.  Skip reporting.
+          reportPattern = null!;
+        }
+      }
+
+      if (reportPattern) {
+        const userFrame = parseUserFrame(commitStack)
+          ?? parseUserFrame(state.lastCommitStack);
+
+        const report: FlushReport = {
+          type: 'flush',
+          timestamp: now,
+          pattern: reportPattern,
+          evidence: reportEvidence,
+          suspects: classification.suspects,
+          flushedEffectsCount: triggeringSnapshot.withLayoutEffects.length,
+          blockingDurationMs: now - state.lastCommitTime,
+          setStateLocation:
+            (triggeringSnapshot.withLayoutEffects.find(f => f.effectSource)
+              ?? triggeringSnapshot.withLayoutEffects[0])?.source ?? null,
+          userFrame,
+        };
+
+        state.flushReportsThisTask++;
+        onFlush(report);
+      }
     }
 
     // Update state for next commit
     state.commitInCurrentTask = true;
     state.lastCommitTime = now;
-    state.lastCommitRoot = root;
+    state.lastCommitSnapshot = currentSnapshot;
+    state.lastCommitStack = commitStack;
 
     // Schedule task boundary detection
     if (!state.taskBoundaryPending) {
@@ -278,6 +357,9 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
 
   return {
     handleCommit,
+    setBreakOnLoop(enabled: boolean | BreakOnLoopConfig): void {
+      breakConfig = resolveBreakConfig(enabled);
+    },
     dispose,
   };
 }

@@ -4,17 +4,12 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  server: {
+    sourcemapIgnoreList: () => false,
+  },
   resolve: {
     alias: {
-      'react-flush-observer': path.resolve(__dirname, '../dist/index.js'),
-    },
-  },
-  optimizeDeps: {
-    include: ['react-flush-observer'],
-  },
-  build: {
-    commonjsOptions: {
-      include: [/react-flush-observer/, /node_modules/],
+      'react-flush-observer': path.resolve(__dirname, '../src/index.ts'),
     },
   },
 });

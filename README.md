@@ -16,11 +16,7 @@ Install the observer **before** React loads:
 // setup.js (must be your app's entry point)
 import { install } from 'react-flush-observer';
 
-install({
-  onDetection(detection) {
-    console.log('Detected:', detection);
-  },
-});
+install();
 
 // Import your app AFTER installing
 import('./main.jsx');
@@ -31,56 +27,72 @@ import('./main.jsx');
 <script type="module" src="/setup.js"></script>
 ```
 
+Zero-config `install()` gives you infinite loop protection out of the box.
+
 ## Configuration
 
 ```js
-install({
-  // Callback for each detection
-  onDetection(detection) {
-    console.log(detection);
-    // detection.type: 'setState-in-layout-effect' | 'setState-outside-react' | 'lazy-in-render' | 'infinite-loop'
-    // detection.pattern: string
-    // detection.fiber: React fiber (if available)
-    // detection.stack: string (call stack)
+const observer = install({
+  // Sync re-render detected (flush detection)
+  onFlush(report) {
+    console.log(report);
+    // report.type: 'flush'
+    // report.pattern: 'setState-in-layout-effect' | 'setState-outside-react' | 'lazy-in-render'
   },
+
+  // Infinite loop detected
+  onLoop(report) {
+    console.error(report);
+    // report.type: 'loop'
+    // report.pattern: 'sync' | 'async'
+  },
+
+  // Automatically break infinite loops (default: true)
+  breakOnLoop: true,
 
   // Infinite loop detection thresholds
   maxCommitsPerTask: 50,    // Max commits in a single JS task (sync loops)
   maxCommitsPerWindow: 50,  // Max commits in time window (async loops)
   windowMs: 1000,           // Time window for async detection
 
-  // What to do when infinite loop detected
-  onInfiniteLoop: 'report', // 'report' (default) | 'break'
-
-  // Sample rate for detections (0.0 - 1.0)
+  // Sample rate for flush detections (0.0 - 1.0)
   sampleRate: 1.0,
 });
+
+// Toggle loop breaking at runtime
+observer.setBreakOnLoop(false);
+
+// Remove the observer
+observer.uninstall();
 ```
 
-## Detection Types
+## Flush Patterns
 
-| Type | Description |
-|------|-------------|
+| Pattern | Description |
+|---------|-------------|
 | `setState-in-layout-effect` | `setState` called in `useLayoutEffect`, causing sync re-render |
 | `setState-outside-react` | Multiple `setState` calls outside React's batching (legacy mode) |
 | `lazy-in-render` | `React.lazy()` created during render |
-| `infinite-loop` | Detected runaway render loop |
+
+## Loop Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `sync` | Too many commits in a single JS task (runaway sync loop) |
+| `async` | Too many commits within the time window (runaway async loop) |
 
 ## Breaking Infinite Loops
 
-Set `onInfiniteLoop: 'break'` to automatically stop infinite loops:
+With `breakOnLoop: true` (the default), the observer freezes React's root lanes to stop runaway loops, then unfreezes after the current task:
 
 ```js
-install({
-  onDetection(detection) {
-    if (detection.type === 'infinite-loop') {
-      // Dispatch event for error boundaries to catch
-      window.dispatchEvent(
-        new CustomEvent('infinite-loop-detected', { detail: detection })
-      );
-    }
+const observer = install({
+  onLoop(report) {
+    // Dispatch event for error boundaries to catch
+    window.dispatchEvent(
+      new CustomEvent('infinite-loop-detected', { detail: report })
+    );
   },
-  onInfiniteLoop: 'break',
 });
 ```
 

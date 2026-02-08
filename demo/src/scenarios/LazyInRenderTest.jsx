@@ -1,4 +1,5 @@
 import React, { useState, Suspense } from 'react';
+import Tag from './Tags';
 
 export default function LazyInRenderTest() {
   const [show, setShow] = useState(false);
@@ -16,9 +17,7 @@ export default function LazyInRenderTest() {
     <div className="bg-white rounded-lg p-4 shadow-sm">
       <h2 className="text-sm font-semibold">
         React.lazy in render
-        <span className="ml-1.5 inline-block text-[11px] px-2 py-0.5 rounded-full font-semibold bg-violet-100 text-violet-800">
-          lazy-in-render
-        </span>
+        <Tag type="sync" />
       </h2>
       <p className="text-xs text-gray-500 mt-1 mb-3">
         Creates <code className="bg-gray-100 px-1 rounded">React.lazy</code> inside render. When shown, the Suspense

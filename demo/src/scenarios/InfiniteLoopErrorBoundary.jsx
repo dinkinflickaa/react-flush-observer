@@ -1,6 +1,5 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
-import { InfiniteLoopError } from 'react-flush-observer';
 
 export default class InfiniteLoopErrorBoundary extends React.Component {
   constructor(props) {
@@ -23,16 +22,17 @@ export default class InfiniteLoopErrorBoundary extends React.Component {
 
   handleLoopDetected(event) {
     const detection = event.detail;
-    if (detection.pattern !== this.props.pattern) return;
 
-    // When suspects is provided, check that at least one suspect name
-    // from the detection report matches this boundary's suspects list.
-    // When omitted, fall back to pattern-only matching (backward compatible).
+    // Match on suspects first (most specific), fall back to pattern matching.
+    // React may batch useEffect loops into one task, making them look like
+    // sync loops to the detector — so suspect matching is more reliable.
     const { suspects } = this.props;
     if (suspects) {
       const reportSuspects = detection.suspects || [];
       const match = reportSuspects.some(name => suspects.includes(name));
       if (!match) return;
+    } else if (detection.pattern !== this.props.pattern) {
+      return;
     }
 
     // flushSync forces React to synchronously process this state update,
@@ -41,7 +41,9 @@ export default class InfiniteLoopErrorBoundary extends React.Component {
     // continues because the child keeps re-rendering.
     ReactDOM.flushSync(() => {
       this.setState({
-        error: new InfiniteLoopError(detection),
+        error: new Error(
+          `Infinite loop detected: ${detection.pattern} (${detection.commitCount} commits)`
+        ),
       });
     });
   }

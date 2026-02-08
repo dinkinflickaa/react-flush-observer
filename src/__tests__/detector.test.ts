@@ -13,7 +13,7 @@ import {
   LayoutMask,
   DidCapture,
 } from '../constants';
-import type { Fiber, FiberRoot, Detector, Report } from '../types';
+import type { Fiber, FiberRoot, Detector, FlushReport, LoopReport } from '../types';
 
 function makeFiber(overrides: Partial<Fiber> = {}): Fiber {
   return {
@@ -70,18 +70,18 @@ describe('createDetector', () => {
     return detector;
   }
 
-  test('does not fire onDetection for a single commit', () => {
-    const onDetection = jest.fn();
-    const detector = tracked({ onDetection, sampleRate: 1.0 });
+  test('does not fire onFlush for a single commit', () => {
+    const onFlush = jest.fn();
+    const detector = tracked({ onFlush, sampleRate: 1.0 });
 
     detector.handleCommit(makeLayoutEffectRoot());
 
-    expect(onDetection).not.toHaveBeenCalled();
+    expect(onFlush).not.toHaveBeenCalled();
   });
 
-  test('fires onDetection when two commits occur in the same task', () => {
-    const onDetection = jest.fn();
-    const detector = tracked({ onDetection, sampleRate: 1.0 });
+  test('fires onFlush when two commits occur in the same task', () => {
+    const onFlush = jest.fn();
+    const detector = tracked({ onFlush, sampleRate: 1.0 });
 
     let now = 100;
     performance.now = () => now;
@@ -93,38 +93,38 @@ describe('createDetector', () => {
     const root2 = makePassiveEffectRoot();
     detector.handleCommit(root2);
 
-    expect(onDetection).toHaveBeenCalledTimes(1);
-    const detection = onDetection.mock.calls[0][0] as Report;
-    expect((detection as { pattern: string }).pattern).toBe(
-      'setState-in-layout-effect'
-    );
-    // blockingDurationMs depends on Date.now() which we don't mock
-    expect((detection as { blockingDurationMs: number }).blockingDurationMs).toBeGreaterThanOrEqual(0);
-    expect((detection as { flushedEffectsCount: number }).flushedEffectsCount).toBe(1);
-    expect(typeof detection.timestamp).toBe('number');
-    expect(typeof (detection as { evidence: string }).evidence).toBe('string');
-    expect(Array.isArray((detection as { suspects: unknown[] }).suspects)).toBe(true);
+    expect(onFlush).toHaveBeenCalledTimes(1);
+    const report = onFlush.mock.calls[0][0] as FlushReport;
+    expect(report.type).toBe('flush');
+    expect(report.pattern).toBe('setState-in-layout-effect');
+    expect(report.blockingDurationMs).toBeGreaterThanOrEqual(0);
+    expect(report.flushedEffectsCount).toBe(1);
+    expect(typeof report.timestamp).toBe('number');
+    expect(typeof report.evidence).toBe('string');
+    expect(Array.isArray(report.suspects)).toBe(true);
   });
 
-  test('three commits in one task fires two detections', () => {
-    const onDetection = jest.fn();
-    const detector = tracked({ onDetection, sampleRate: 1.0 });
+  test('three commits in one task fires two flush reports for cascading layout effects', () => {
+    const onFlush = jest.fn();
+    const detector = tracked({ onFlush, sampleRate: 1.0 });
 
     let now = 100;
     performance.now = () => now;
 
+    // Models a 3-commit cascade: each commit has layout effects that trigger
+    // the next setState, producing a genuine cascading nested update.
     detector.handleCommit(makeLayoutEffectRoot());
     now = 105;
-    detector.handleCommit(makePassiveEffectRoot());
+    detector.handleCommit(makeLayoutEffectRoot());
     now = 110;
-    detector.handleCommit(makePassiveEffectRoot());
+    detector.handleCommit(makeLayoutEffectRoot());
 
-    expect(onDetection).toHaveBeenCalledTimes(2);
+    expect(onFlush).toHaveBeenCalledTimes(2);
   });
 
   test('resets state after task boundary', (done) => {
-    const onDetection = jest.fn();
-    const detector = tracked({ onDetection, sampleRate: 1.0 });
+    const onFlush = jest.fn();
+    const detector = tracked({ onFlush, sampleRate: 1.0 });
 
     detector.handleCommit(makeLayoutEffectRoot());
 
@@ -133,23 +133,23 @@ describe('createDetector', () => {
       setTimeout(() => {
         detector.handleCommit(makeLayoutEffectRoot());
         // Second commit is in a new task, should not trigger detection
-        expect(onDetection).not.toHaveBeenCalled();
+        expect(onFlush).not.toHaveBeenCalled();
         done();
       }, 0);
     }, 0);
   });
 
   test('respects sampleRate of 0 (never samples)', () => {
-    const onDetection = jest.fn();
-    const detector = tracked({ onDetection, sampleRate: 0 });
+    const onFlush = jest.fn();
+    const detector = tracked({ onFlush, sampleRate: 0 });
 
     detector.handleCommit(makeLayoutEffectRoot());
     detector.handleCommit(makePassiveEffectRoot());
 
-    expect(onDetection).not.toHaveBeenCalled();
+    expect(onFlush).not.toHaveBeenCalled();
   });
 
-  test('works without onDetection callback', () => {
+  test('works without onFlush callback', () => {
     const detector = tracked({ sampleRate: 1.0 });
 
     // Should not throw
@@ -157,9 +157,39 @@ describe('createDetector', () => {
     detector.handleCommit(makePassiveEffectRoot());
   });
 
+  test('does not fire for unbatched setTimeout-style commits (no layout effects, no flushSync)', () => {
+    const onFlush = jest.fn();
+    const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+    // Two passive-effect roots — classified as setState-outside-react,
+    // no flushSync in the call stack → skip reporting
+    detector.handleCommit(makePassiveEffectRoot());
+    detector.handleCommit(makePassiveEffectRoot());
+
+    expect(onFlush).not.toHaveBeenCalled();
+  });
+
+  test('fires with flushSync pattern when flushSync is in the call stack', () => {
+    const onFlush = jest.fn();
+    const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+    // Wrap in a function named flushSync so it appears in Error().stack
+    function flushSync() {
+      detector.handleCommit(makePassiveEffectRoot());
+    }
+
+    flushSync(); // commit 1 — stack contains "flushSync"
+    flushSync(); // commit 2 — forced flush, stack still has "flushSync"
+
+    expect(onFlush).toHaveBeenCalledTimes(1);
+    const report = onFlush.mock.calls[0][0] as FlushReport;
+    expect(report.pattern).toBe('flushSync');
+    expect(report.evidence).toBe('flushSync caused synchronous re-render');
+  });
+
   test('classifies Suspense pattern correctly', () => {
-    const onDetection = jest.fn();
-    const detector = tracked({ onDetection, sampleRate: 1.0 });
+    const onFlush = jest.fn();
+    const detector = tracked({ onFlush, sampleRate: 1.0 });
 
     const suspenseChild = makeFiber({
       tag: SuspenseComponent,
@@ -172,9 +202,9 @@ describe('createDetector', () => {
     detector.handleCommit(suspenseRoot);
     detector.handleCommit(makePassiveEffectRoot());
 
-    expect(onDetection).toHaveBeenCalledTimes(1);
+    expect(onFlush).toHaveBeenCalledTimes(1);
     expect(
-      (onDetection.mock.calls[0][0] as { pattern: string }).pattern
+      (onFlush.mock.calls[0][0] as FlushReport).pattern
     ).toBe('lazy-in-render');
   });
 
@@ -183,7 +213,7 @@ describe('createDetector', () => {
       const detector = tracked({
         sampleRate: 1.0,
         maxCommitsPerTask: 5,
-        onInfiniteLoop: 'break',
+        breakOnLoop: true,
       });
 
       let now = 100;
@@ -209,7 +239,7 @@ describe('createDetector', () => {
       const detector = tracked({
         sampleRate: 1.0,
         maxCommitsPerTask: 5,
-        onInfiniteLoop: 'break',
+        breakOnLoop: true,
       });
 
       let now = 100;
@@ -228,13 +258,13 @@ describe('createDetector', () => {
       expect(root.pendingLanes).toBe(1);
     });
 
-    test('report mode fires onDetection without freezing', (done) => {
-      const onDetection = jest.fn();
+    test('report mode fires onLoop without freezing', (done) => {
+      const onLoop = jest.fn();
       const detector = tracked({
-        onDetection,
+        onLoop,
         sampleRate: 1.0,
         maxCommitsPerTask: 5,
-        onInfiniteLoop: 'report',
+        breakOnLoop: false,
       });
 
       let now = 100;
@@ -253,25 +283,22 @@ describe('createDetector', () => {
 
       // Report is delivered via queueMicrotask, so check after a tick
       setTimeout(() => {
-        const loopDetections = onDetection.mock.calls.filter(
-          (c: [Report]) => (c[0] as { type?: string }).type === 'infinite-loop'
-        );
-        expect(loopDetections.length).toBe(1);
-        expect((loopDetections[0][0] as { pattern: string }).pattern).toBe(
-          'infinite-loop-sync'
-        );
-        expect((loopDetections[0][0] as { commitCount: number }).commitCount).toBe(6);
+        expect(onLoop).toHaveBeenCalledTimes(1);
+        const report = onLoop.mock.calls[0][0] as LoopReport;
+        expect(report.type).toBe('loop');
+        expect(report.pattern).toBe('sync');
+        expect(report.commitCount).toBe(6);
         done();
       }, 10);
     });
 
     test('break mode delivers structured report via setTimeout', (done) => {
-      const onDetection = jest.fn();
+      const onLoop = jest.fn();
       const detector = tracked({
-        onDetection,
+        onLoop,
         sampleRate: 1.0,
         maxCommitsPerTask: 3,
-        onInfiniteLoop: 'break',
+        breakOnLoop: true,
       });
 
       let now = 100;
@@ -283,24 +310,13 @@ describe('createDetector', () => {
       }
 
       // Not called synchronously for loop detection
-      const syncDetections = onDetection.mock.calls.filter(
-        (c: [Report]) => (c[0] as { type?: string }).type === 'infinite-loop'
-      );
-      expect(syncDetections.length).toBe(0);
+      expect(onLoop).not.toHaveBeenCalled();
 
       setTimeout(() => {
-        const loopDetections = onDetection.mock.calls.filter(
-          (c: [Report]) => (c[0] as { type?: string }).type === 'infinite-loop'
-        );
-        expect(loopDetections.length).toBe(1);
-        const report = loopDetections[0][0] as {
-          type: string;
-          pattern: string;
-          commitCount: number;
-          stack: string;
-        };
-        expect(report.type).toBe('infinite-loop');
-        expect(report.pattern).toBe('infinite-loop-sync');
+        expect(onLoop).toHaveBeenCalledTimes(1);
+        const report = onLoop.mock.calls[0][0] as LoopReport;
+        expect(report.type).toBe('loop');
+        expect(report.pattern).toBe('sync');
         expect(report.commitCount).toBeGreaterThanOrEqual(4);
         expect(report.stack).toBeDefined();
         done();
@@ -311,7 +327,7 @@ describe('createDetector', () => {
       const detector = tracked({
         sampleRate: 1.0,
         maxCommitsPerTask: 5,
-        onInfiniteLoop: 'break',
+        breakOnLoop: true,
       });
 
       let now = 100;
@@ -341,7 +357,7 @@ describe('createDetector', () => {
       const detector = tracked({
         sampleRate: 1.0,
         maxCommitsPerTask: 5,
-        onInfiniteLoop: 'break',
+        breakOnLoop: true,
       });
 
       let now = 100;
@@ -370,12 +386,12 @@ describe('createDetector', () => {
     });
 
     test('report mode spam guard: only fires once per task', (done) => {
-      const onDetection = jest.fn();
+      const onLoop = jest.fn();
       const detector = tracked({
-        onDetection,
+        onLoop,
         sampleRate: 1.0,
         maxCommitsPerTask: 3,
-        onInfiniteLoop: 'report',
+        breakOnLoop: false,
       });
 
       let now = 100;
@@ -388,131 +404,230 @@ describe('createDetector', () => {
 
       // Report is delivered via queueMicrotask
       setTimeout(() => {
-        const loopDetections = onDetection.mock.calls.filter(
-          (c: [Report]) => (c[0] as { type?: string }).type === 'infinite-loop'
-        );
-        expect(loopDetections.length).toBe(1);
+        expect(onLoop).toHaveBeenCalledTimes(1);
         done();
       }, 10);
     });
   });
 
-  describe('async infinite loop detection', () => {
-    // Skip: async detection uses queueMicrotask which has timing issues in jsdom with nested setTimeout
-    test.skip('fires detection when commits across tasks exceed maxCommitsPerWindow within windowMs', (done) => {
-      const onDetection = jest.fn();
+  describe('async infinite loop detection (sliding window)', () => {
+    test('fires when commits across tasks exceed maxCommitsPerWindow within windowMs', () => {
+      const onLoop = jest.fn();
       const detector = tracked({
-        onDetection,
+        onLoop,
         sampleRate: 1.0,
         maxCommitsPerTask: 1000, // high — won't trigger sync detection
         maxCommitsPerWindow: 5,
         windowMs: 1000,
-        onInfiniteLoop: 'report',
+        breakOnLoop: false,
       });
 
-      let now = 100;
-      performance.now = () => now;
-
-      // First task: 2 commits
-      detector.handleCommit(makeLayoutEffectRoot());
-      now += 1;
-      detector.handleCommit(makeLayoutEffectRoot());
-
-      // Wait for task boundary
-      setTimeout(() => {
-        now += 10;
-        // Second task: 2 more commits
+      // Ring buffer fills after 5 commits, 6th triggers detection
+      // All within < 1000ms of each other (synchronous = ~0ms apart)
+      for (let i = 0; i < 6; i++) {
         detector.handleCommit(makeLayoutEffectRoot());
-        now += 1;
-        detector.handleCommit(makeLayoutEffectRoot());
+      }
 
+      // Sliding window fires synchronously (inline, not via queueMicrotask)
+      // because handleLoopDetection doesn't return early for async — it still
+      // records the commit. The onLoop callback is queued via queueMicrotask.
+      // But the detection itself happens on the 6th commit.
+      // In breakOnLoop: false mode, report is delivered via queueMicrotask.
+      // We need to wait for it.
+      return new Promise<void>((resolve) => {
         setTimeout(() => {
-          now += 10;
-          // Third task: 1 more commit — total 5, should trigger
-          detector.handleCommit(makeLayoutEffectRoot());
-
-          const loopDetections = onDetection.mock.calls.filter(
-            (c: [Report]) => (c[0] as { type?: string }).type === 'infinite-loop'
-          );
-          expect(loopDetections.length).toBe(1);
-          expect((loopDetections[0][0] as { pattern: string }).pattern).toBe(
-            'infinite-loop-async'
-          );
-          expect((loopDetections[0][0] as { commitCount: number }).commitCount).toBe(5);
-          done();
-        }, 0);
-      }, 0);
+          expect(onLoop).toHaveBeenCalledTimes(1);
+          const report = onLoop.mock.calls[0][0] as LoopReport;
+          expect(report.type).toBe('loop');
+          expect(report.pattern).toBe('async');
+          expect(report.commitCount).toBe(6);
+          expect(report.windowMs).toBeLessThan(1000);
+          resolve();
+        }, 10);
+      });
     });
 
-    test('async window resets after windowMs elapses', (done) => {
-      const onDetection = jest.fn();
+    test('does not fire when commits are spread beyond windowMs', () => {
+      const onLoop = jest.fn();
       const detector = tracked({
-        onDetection,
+        onLoop,
         sampleRate: 1.0,
         maxCommitsPerTask: 1000,
         maxCommitsPerWindow: 5,
         windowMs: 100,
-        onInfiniteLoop: 'report',
+        breakOnLoop: false,
       });
 
-      let now = 100;
-      performance.now = () => now;
+      // Mock Date.now to control timing
+      const originalDateNow = Date.now;
+      let now = 1000;
+      Date.now = () => now;
 
-      // 3 commits in first window
-      for (let i = 0; i < 3; i++) {
-        now += 1;
-        detector.handleCommit(makeLayoutEffectRoot());
-      }
-
-      setTimeout(() => {
-        // Jump past windowMs
-        now += 200;
-
-        // 3 more commits in new window — should NOT trigger (only 3 in this window)
+      try {
+        // 3 commits in first batch
         for (let i = 0; i < 3; i++) {
           now += 1;
           detector.handleCommit(makeLayoutEffectRoot());
         }
 
-        const loopDetections = onDetection.mock.calls.filter(
-          (c: [Report]) => (c[0] as { type?: string }).type === 'infinite-loop'
-        );
-        expect(loopDetections.length).toBe(0);
-        done();
-      }, 0);
+        // Jump past windowMs
+        now += 200;
+
+        // 3 more commits — the ring buffer now has 6 entries total but the
+        // oldest (from first batch) is >200ms ago, so no detection
+        for (let i = 0; i < 3; i++) {
+          now += 1;
+          detector.handleCommit(makeLayoutEffectRoot());
+        }
+
+        expect(onLoop).not.toHaveBeenCalled();
+      } finally {
+        Date.now = originalDateNow;
+      }
     });
 
-    // The sync detection fires once, but async also fires because the spam guards are per-pattern
-    test('sync detection takes priority over async when both would fire', (done) => {
-      const onDetection = jest.fn();
+    test('sliding window catches bursts that straddle tumbling window boundaries', () => {
+      const onLoop = jest.fn();
       const detector = tracked({
-        onDetection,
+        onLoop,
+        sampleRate: 1.0,
+        maxCommitsPerTask: 1000,
+        maxCommitsPerWindow: 5,
+        windowMs: 100,
+        breakOnLoop: false,
+      });
+
+      const originalDateNow = Date.now;
+      let now = 1000;
+      Date.now = () => now;
+
+      try {
+        // 4 commits near the end of one hypothetical "window"
+        for (let i = 0; i < 4; i++) {
+          now += 1;
+          detector.handleCommit(makeLayoutEffectRoot());
+        }
+
+        // Small gap (still within 100ms of the first commit)
+        now += 10;
+
+        // 2 more commits — total 6 within ~14ms, all within windowMs
+        // A tumbling window might miss this if the boundary fell between batches
+        for (let i = 0; i < 2; i++) {
+          now += 1;
+          detector.handleCommit(makeLayoutEffectRoot());
+        }
+
+        // Should have fired — 6 > 5 commits within 100ms
+        return new Promise<void>((resolve) => {
+          setTimeout(() => {
+            expect(onLoop).toHaveBeenCalledTimes(1);
+            const report = onLoop.mock.calls[0][0] as LoopReport;
+            expect(report.pattern).toBe('async');
+            resolve();
+          }, 10);
+        });
+      } finally {
+        Date.now = originalDateNow;
+      }
+    });
+
+    test('spam guard: only fires once per windowMs', () => {
+      const onLoop = jest.fn();
+      const detector = tracked({
+        onLoop,
+        sampleRate: 1.0,
+        maxCommitsPerTask: 1000,
+        maxCommitsPerWindow: 3,
+        windowMs: 100,
+        breakOnLoop: false,
+      });
+
+      const originalDateNow = Date.now;
+      let now = 1000;
+      Date.now = () => now;
+
+      try {
+        // 10 commits rapidly — should only fire once due to spam guard
+        for (let i = 0; i < 10; i++) {
+          now += 1;
+          detector.handleCommit(makeLayoutEffectRoot());
+        }
+
+        return new Promise<void>((resolve) => {
+          setTimeout(() => {
+            expect(onLoop).toHaveBeenCalledTimes(1);
+            resolve();
+          }, 10);
+        });
+      } finally {
+        Date.now = originalDateNow;
+      }
+    });
+
+    test('fires again after spam guard cooldown', () => {
+      const onLoop = jest.fn();
+      const detector = tracked({
+        onLoop,
+        sampleRate: 1.0,
+        maxCommitsPerTask: 1000,
+        maxCommitsPerWindow: 3,
+        windowMs: 100,
+        breakOnLoop: false,
+      });
+
+      const originalDateNow = Date.now;
+      let now = 1000;
+      Date.now = () => now;
+
+      try {
+        // First burst: 4 commits triggers detection
+        for (let i = 0; i < 4; i++) {
+          now += 1;
+          detector.handleCommit(makeLayoutEffectRoot());
+        }
+
+        // Jump past windowMs (spam guard cooldown)
+        now += 200;
+
+        // Second burst: another 4 commits should trigger again
+        for (let i = 0; i < 4; i++) {
+          now += 1;
+          detector.handleCommit(makeLayoutEffectRoot());
+        }
+
+        return new Promise<void>((resolve) => {
+          setTimeout(() => {
+            expect(onLoop).toHaveBeenCalledTimes(2);
+            resolve();
+          }, 10);
+        });
+      } finally {
+        Date.now = originalDateNow;
+      }
+    });
+
+    test('sync detection takes priority over async when both would fire', (done) => {
+      const onLoop = jest.fn();
+      const detector = tracked({
+        onLoop,
         sampleRate: 1.0,
         maxCommitsPerTask: 3,
         maxCommitsPerWindow: 3,
         windowMs: 1000,
-        onInfiniteLoop: 'report',
+        breakOnLoop: false,
       });
 
-      let now = 100;
-      performance.now = () => now;
-
       for (let i = 0; i < 5; i++) {
-        now += 1;
         detector.handleCommit(makeLayoutEffectRoot());
       }
 
-      // Report is delivered via queueMicrotask
+      // Reports are delivered via queueMicrotask
       setTimeout(() => {
-        const loopDetections = onDetection.mock.calls.filter(
-          (c: [Report]) => (c[0] as { type?: string }).type === 'infinite-loop'
-        );
-        // Both sync and async may fire since guards are per-pattern
-        expect(loopDetections.length).toBeGreaterThanOrEqual(1);
-        // First detection should be sync
-        expect((loopDetections[0][0] as { pattern: string }).pattern).toBe(
-          'infinite-loop-sync'
-        );
+        // First detection should be sync (fires at commit 4, before async at commit 4)
+        expect(onLoop.mock.calls.length).toBeGreaterThanOrEqual(1);
+        const report = onLoop.mock.calls[0][0] as LoopReport;
+        expect(report.pattern).toBe('sync');
         done();
       }, 10);
     });
@@ -523,7 +638,7 @@ describe('createDetector', () => {
       const detector = tracked({
         sampleRate: 1.0,
         maxCommitsPerTask: 5,
-        onInfiniteLoop: 'break',
+        breakOnLoop: true,
       });
 
       let now = 100;
@@ -558,7 +673,7 @@ describe('createDetector', () => {
       const detector = tracked({
         sampleRate: 1.0,
         maxCommitsPerTask: 5,
-        onInfiniteLoop: 'break',
+        breakOnLoop: true,
       });
 
       let now = 100;
@@ -600,7 +715,7 @@ describe('createDetector', () => {
       const detector = tracked({
         sampleRate: 1.0,
         maxCommitsPerTask: 5,
-        onInfiniteLoop: 'break',
+        breakOnLoop: true,
       });
 
       let now = 100;

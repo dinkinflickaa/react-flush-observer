@@ -18,6 +18,7 @@ import {
   LayoutMask,
   DidCapture,
   Visibility,
+  HookHasEffect,
   HookLayout,
 } from './constants';
 
@@ -82,13 +83,16 @@ function readLayoutEffectSource(fiber: Fiber): string | null {
     return null;
   }
 
-  // Effects form a circular linked list
+  // Effects form a circular linked list.
+  // Only match effects with both HookLayout AND HookHasEffect — the latter
+  // indicates the effect needs to fire (deps changed or mount).  This filters
+  // out stale layout effects on fibers reused from a previous commit.
+  const needed = HookLayout | HookHasEffect;
   const firstEffect = queue.lastEffect.next;
   let effect: Effect = firstEffect;
 
   do {
-    // HookLayout = 0b0100, indicates a layout effect
-    if ((effect.tag & HookLayout) !== 0) {
+    if ((effect.tag & needed) === needed) {
       try {
         return effect.create.toString();
       } catch {
@@ -99,6 +103,19 @@ function readLayoutEffectSource(fiber: Fiber): string | null {
   } while (effect !== firstEffect);
 
   return null;
+}
+
+/**
+ * Returns true if any bits in `mask` are newly set on this fiber
+ * compared to its alternate (the previous committed version).
+ * On mount (no alternate), all set bits are considered new.
+ */
+function hasNewFlags(fiber: Fiber, mask: number): boolean {
+  const current = fiber.flags & mask;
+  if (current === 0) return false;
+  if (!fiber.alternate) return true;
+  const previous = fiber.alternate.flags & mask;
+  return (current & ~previous) !== 0;
 }
 
 function isComponentFiber(fiber: Fiber): boolean {
@@ -126,8 +143,10 @@ function walkFiber(
     result.withPassiveEffects.push(baseInfo);
   }
 
-  // Check for layout effects
-  if ((fiber.flags & LayoutMask) !== 0) {
+  // Check for layout effects — only on component fibers (function/class).
+  // Host elements (DOM nodes) get LayoutMask for content updates which are
+  // not layout effects and would pollute the suspects list.
+  if ((fiber.flags & LayoutMask) !== 0 && isComponent) {
     const detailedInfo: DetailedFiberInfo = {
       ...baseInfo,
       source: readDebugSource(fiber),
@@ -137,8 +156,9 @@ function walkFiber(
     result.withLayoutEffects.push(detailedInfo);
   }
 
-  // Check for Suspense boundaries that captured
-  if (fiber.tag === SuspenseComponent && (fiber.flags & DidCapture) !== 0) {
+  // Check for Suspense boundaries — only NEWLY captured (not stale from
+  // a previous commit where the lazy component already resolved).
+  if (fiber.tag === SuspenseComponent && hasNewFlags(fiber, DidCapture)) {
     // Try to get the lazy component name from the child
     let resolvedName: string | null = null;
     if (fiber.child) {
@@ -151,8 +171,8 @@ function walkFiber(
     result.withSuspense.push(suspenseInfo);
   }
 
-  // Check for Offscreen with visibility changes (also indicates Suspense)
-  if (fiber.tag === OffscreenComponent && (fiber.flags & Visibility) !== 0) {
+  // Check for Offscreen with visibility changes — only newly set
+  if (fiber.tag === OffscreenComponent && hasNewFlags(fiber, Visibility)) {
     const suspenseInfo: SuspenseFiberInfo = {
       ...baseInfo,
       resolvedName: null,
@@ -180,7 +200,7 @@ function walkFiber(
   }
 }
 
-export function snapshotCommitFibers(root: FiberRoot): FiberSnapshot {
+export function snapshotFromFiber(rootFiber: Fiber): FiberSnapshot {
   const result: FiberSnapshot = {
     withPassiveEffects: [],
     withLayoutEffects: [],
@@ -188,10 +208,20 @@ export function snapshotCommitFibers(root: FiberRoot): FiberSnapshot {
     withUpdates: [],
   };
 
+  walkFiber(rootFiber, result, null);
+  return result;
+}
+
+export function snapshotCommitFibers(root: FiberRoot): FiberSnapshot {
   const rootFiber = root.current;
   if (rootFiber) {
-    walkFiber(rootFiber, result, null);
+    return snapshotFromFiber(rootFiber);
   }
 
-  return result;
+  return {
+    withPassiveEffects: [],
+    withLayoutEffects: [],
+    withSuspense: [],
+    withUpdates: [],
+  };
 }

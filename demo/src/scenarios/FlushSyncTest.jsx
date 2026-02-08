@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import ReactDOM from 'react-dom';
+import Tag from './Tags';
 
 export default function FlushSyncTest() {
   const [synced, setSynced] = useState(0);
@@ -16,9 +17,8 @@ export default function FlushSyncTest() {
     <div className="bg-white rounded-lg p-4 shadow-sm">
       <h2 className="text-sm font-semibold">
         flushSync (false positive)
-        <span className="ml-1.5 inline-block text-[11px] px-2 py-0.5 rounded-full font-semibold bg-red-100 text-red-800">
-          setState-outside-react
-        </span>
+        <Tag type="sync" />
+        <Tag type="false-positive" />
       </h2>
       <p className="text-xs text-gray-500 mt-1 mb-3">
         <code className="bg-gray-100 px-1 rounded">flushSync</code> forces a commit, then the following{' '}

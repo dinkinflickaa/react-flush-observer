@@ -1,4 +1,5 @@
 import React, { useState, useLayoutEffect } from 'react';
+import Tag from './Tags';
 
 export default function CascadeTest() {
   const [step, setStep] = useState(0);
@@ -21,12 +22,7 @@ export default function CascadeTest() {
     <div className="bg-white rounded-lg p-4 shadow-sm">
       <h2 className="text-sm font-semibold">
         3-commit cascade
-        <span className="ml-1.5 inline-block text-[11px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-800">
-          setState-in-layout-effect
-        </span>
-        <span className="ml-1 inline-block text-[11px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-800">
-          &times;2
-        </span>
+        <Tag type="sync" />
       </h2>
       <p className="text-xs text-gray-500 mt-1 mb-3">
         Two chained <code className="bg-gray-100 px-1 rounded">useLayoutEffect</code> setState calls create 3 commits

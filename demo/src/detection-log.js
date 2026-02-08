@@ -19,12 +19,17 @@ const PATTERN_STYLES = {
     border: 'border-red-400',
     label: 'Outside React',
   },
-  'infinite-loop-sync': {
+  'flushSync': {
+    bg: 'bg-orange-50',
+    border: 'border-orange-500',
+    label: 'flushSync',
+  },
+  'sync': {
     bg: 'bg-rose-50',
     border: 'border-rose-600',
     label: 'Infinite Loop (Sync)',
   },
-  'infinite-loop-async': {
+  'async': {
     bg: 'bg-rose-50',
     border: 'border-rose-600',
     label: 'Infinite Loop (Async)',
@@ -88,12 +93,12 @@ export function appendDetection(detection) {
   pattern.className = 'font-semibold text-gray-900';
   pattern.textContent = style.label;
 
-  // Suspect component names — deduplicate via ownerName
+  // Suspect component names — prefer the component's own name (type.name)
+  // over the parent's name (ownerName) for accuracy.
   const seen = new Set();
   const suspectNames = (detection.suspects || [])
     .map(s => {
-      const name = s.ownerName || s.type?.displayName || s.type?.name;
-      // For Suspense suspects, append the resolved lazy component name
+      const name = s.type?.displayName || s.type?.name || s.ownerName;
       if (s.resolvedName && s.resolvedName !== name) {
         return name ? `${name} → lazy(${s.resolvedName})` : `lazy(${s.resolvedName})`;
       }
@@ -117,47 +122,23 @@ export function appendDetection(detection) {
 
   entry.appendChild(evidence);
 
-  // Dev-mode enrichment: source location, component stack, effect source
-  const firstSuspect = (detection.suspects || [])[0];
-  if (firstSuspect) {
-    if (firstSuspect.source) {
-      const src = firstSuspect.source;
-      const short = src.fileName ? src.fileName.replace(/^.*\/src\//, 'src/') : null;
-      if (short) {
-        const sourceEl = document.createElement('span');
-        sourceEl.className = 'text-blue-600 text-xs font-mono block mt-1';
-        sourceEl.textContent = `📍 ${short}:${src.lineNumber}:${src.columnNumber}`;
-        entry.appendChild(sourceEl);
-      }
-    }
-    if (firstSuspect.componentStack && firstSuspect.componentStack.length > 0) {
-      const stackEl = document.createElement('span');
-      stackEl.className = 'text-gray-600 text-xs font-mono block mt-0.5';
-      stackEl.textContent = `🧩 ${firstSuspect.componentStack.join(' → ')}`;
-      entry.appendChild(stackEl);
-    }
-    if (firstSuspect.effectSource) {
-      const effectEl = document.createElement('span');
-      effectEl.className = 'text-orange-700 text-xs font-mono block mt-1 whitespace-pre-wrap bg-orange-50 rounded px-2 py-1 border border-orange-200';
-      effectEl.textContent = firstSuspect.effectSource;
-      entry.appendChild(effectEl);
-    }
-  }
-  if (detection.setStateLocation) {
-    const loc = detection.setStateLocation;
-    const short = loc.fileName ? loc.fileName.replace(/^.*\/src\//, 'src/') : null;
+  // Call-stack based source location — the most reliable signal for where
+  // the nested update originated.
+  if (detection.userFrame) {
+    const frame = detection.userFrame;
+    const short = frame.fileName ? frame.fileName.replace(/^.*\/src\//, 'src/') : null;
     if (short) {
-      const locEl = document.createElement('span');
-      locEl.className = 'text-red-600 text-xs font-mono block mt-1';
-      locEl.textContent = `📍 setState at ${short}:${loc.lineNumber}:${loc.columnNumber}`;
-      entry.appendChild(locEl);
+      const frameEl = document.createElement('span');
+      frameEl.className = 'text-indigo-600 text-xs font-mono block mt-1';
+      frameEl.textContent = `📍 ${short}:${frame.lineNumber}:${frame.columnNumber}`;
+      entry.appendChild(frameEl);
     }
   }
 
   const meta = document.createElement('span');
   meta.className = 'text-gray-400 text-[11px] block mt-0.5';
 
-  if (detection.type === 'infinite-loop') {
+  if (detection.type === 'loop') {
     const windowInfo = detection.windowMs != null ? ` in ${detection.windowMs.toFixed(0)}ms` : '';
     meta.textContent = `${detection.commitCount} commits${windowInfo} · ${new Date(detection.timestamp).toLocaleTimeString()}`;
 
@@ -172,6 +153,11 @@ export function appendDetection(detection) {
   entry.appendChild(meta);
 
   logBody.prepend(entry);
+
+  // Keep only the 50 most recent entries
+  while (logBody.children.length > 50) {
+    logBody.lastChild.remove();
+  }
 }
 
 export function clearLog() {

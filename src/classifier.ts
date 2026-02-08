@@ -11,18 +11,26 @@ export function classifyPattern(snapshot: FiberSnapshot): ClassificationResult {
   }
 
   // Layout effects with updates = setState in useLayoutEffect
+  // Prefer fibers with actual effect source code — filters out reused fibers
+  // with stale LayoutMask flags that weren't re-rendered in this commit.
   if (snapshot.withLayoutEffects.length > 0) {
+    const withEffectSource = snapshot.withLayoutEffects.filter(f => f.effectSource);
     return {
       pattern: 'setState-in-layout-effect',
-      suspects: snapshot.withLayoutEffects as FiberInfo[],
+      suspects: (withEffectSource.length > 0
+        ? withEffectSource
+        : snapshot.withLayoutEffects) as FiberInfo[],
       evidence: 'Layout effect triggered state update',
     };
   }
 
-  // Default: multiple setState calls outside React batching
+  // Default: multiple setState calls outside React batching.
+  // Component fibers have no reliable flags for pure-state updates, so
+  // suspects may be empty.  The flush report's userFrame (from call stack)
+  // provides the actual setState call site for debugging.
   return {
     pattern: 'setState-outside-react',
-    suspects: snapshot.withUpdates as FiberInfo[],
+    suspects: [],
     evidence: 'Multiple commits in same task without React batching',
   };
 }

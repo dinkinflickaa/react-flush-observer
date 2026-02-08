@@ -1,38 +1,43 @@
-import type { InstallConfig, FiberRoot, Fiber, ReactInternals } from './types';
+import type { InstallConfig, BreakOnLoopConfig, FiberRoot, Fiber, ReactInternals } from './types';
 import { createDetector } from './detector';
 
-export { InfiniteLoopError } from './errors';
 export type {
   InstallConfig,
-  DetectorConfig,
-  Report,
-  DetectionReport,
+  BreakOnLoopConfig,
+  FlushReport,
   LoopReport,
-  FiberSnapshot,
+  Report,
+  FlushPattern,
+  LoopPattern,
   SourceInfo,
   FiberInfo,
-  DetailedFiberInfo,
-  InfiniteLoopAction,
 } from './types';
 
-export function install(config: InstallConfig = {}): () => void {
+export interface Observer {
+  uninstall(): void;
+  setBreakOnLoop(enabled: boolean | BreakOnLoopConfig): void;
+}
+
+export function install(config: InstallConfig = {}): Observer {
   const {
     sampleRate = 1.0,
-    onDetection = null,
+    onFlush,
+    onLoop,
+    breakOnLoop,
     maxCommitsPerTask,
     maxCommitsPerWindow,
     windowMs,
-    onInfiniteLoop,
   } = config;
 
   const existingHook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
   const detector = createDetector({
     sampleRate,
-    onDetection,
+    onFlush,
+    onLoop,
+    breakOnLoop,
     maxCommitsPerTask,
     maxCommitsPerWindow,
     windowMs,
-    onInfiniteLoop,
   });
 
   window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
@@ -61,8 +66,13 @@ export function install(config: InstallConfig = {}): () => void {
     },
   };
 
-  return function uninstall(): void {
-    detector.dispose();
-    window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = existingHook;
+  return {
+    uninstall(): void {
+      detector.dispose();
+      window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = existingHook;
+    },
+    setBreakOnLoop(enabled: boolean | BreakOnLoopConfig): void {
+      detector.setBreakOnLoop(enabled);
+    },
   };
 }

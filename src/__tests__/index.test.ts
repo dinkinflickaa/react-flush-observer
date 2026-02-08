@@ -5,8 +5,8 @@ if (typeof globalThis.MessageChannel === 'undefined') {
   globalThis.MessageChannel = MessageChannel;
 }
 
-import { install, InfiniteLoopError } from '../index';
-import type { Fiber, FiberRoot, Report } from '../types';
+import { install } from '../index';
+import type { Fiber, FiberRoot, LoopReport } from '../types';
 
 describe('install', () => {
   let originalHook: typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
@@ -24,9 +24,9 @@ describe('install', () => {
   });
 
   function tracked(): () => void {
-    const uninstall = install();
-    uninstallFns.push(uninstall);
-    return uninstall;
+    const result = install();
+    uninstallFns.push(result.uninstall);
+    return result.uninstall;
   }
 
   function makeFiber(overrides: Partial<Fiber> = {}): Fiber {
@@ -147,22 +147,22 @@ describe('install', () => {
     };
     window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = previousHook;
 
-    const uninstall = install();
+    const result = install();
     expect(window.__REACT_DEVTOOLS_GLOBAL_HOOK__).not.toBe(previousHook);
 
-    uninstall();
+    result.uninstall();
     expect(window.__REACT_DEVTOOLS_GLOBAL_HOOK__).toBe(previousHook);
   });
 
-  test('passes infinite loop config to detector', (done) => {
+  test('passes loop config to detector', (done) => {
     delete window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
-    const onDetection = jest.fn();
-    const uninstall = install({
-      onDetection,
+    const onLoop = jest.fn();
+    const result = install({
+      onLoop,
       maxCommitsPerTask: 3,
-      onInfiniteLoop: 'report',
+      breakOnLoop: false,
     });
-    uninstallFns.push(uninstall);
+    uninstallFns.push(result.uninstall);
 
     let now = 100;
     const origNow = performance.now;
@@ -205,10 +205,9 @@ describe('install', () => {
 
     // Report is delivered via queueMicrotask
     setTimeout(() => {
-      const loopDetections = onDetection.mock.calls.filter(
-        (c: [Report]) => (c[0] as { type?: string }).type === 'infinite-loop'
-      );
-      expect(loopDetections.length).toBe(1);
+      expect(onLoop).toHaveBeenCalledTimes(1);
+      const report = onLoop.mock.calls[0][0] as LoopReport;
+      expect(report.type).toBe('loop');
       performance.now = origNow;
       done();
     }, 10);
@@ -216,11 +215,11 @@ describe('install', () => {
 
   test('break mode freezes root.pendingLanes through onCommitFiberRoot', () => {
     delete window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
-    const uninstall = install({
+    const result = install({
       maxCommitsPerTask: 3,
-      onInfiniteLoop: 'break',
+      breakOnLoop: true,
     });
-    uninstallFns.push(uninstall);
+    uninstallFns.push(result.uninstall);
 
     let now = 100;
     const origNow = performance.now;
@@ -266,28 +265,5 @@ describe('install', () => {
     expect(root.pendingLanes).toBe(0);
 
     performance.now = origNow;
-  });
-
-  test('exports InfiniteLoopError', () => {
-    expect(InfiniteLoopError).toBeDefined();
-    expect(
-      new InfiniteLoopError({
-        type: 'infinite-loop',
-        pattern: 'infinite-loop-sync',
-        commitCount: 1,
-        windowMs: null,
-        stack: null,
-        suspects: [],
-        triggeringCommit: null,
-        forcedCommit: {
-          withPassiveEffects: [],
-          withLayoutEffects: [],
-          withSuspense: [],
-          withUpdates: [],
-        },
-        userFrame: null,
-        timestamp: Date.now(),
-      })
-    ).toBeInstanceOf(Error);
   });
 });

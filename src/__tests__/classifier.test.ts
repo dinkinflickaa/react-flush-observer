@@ -57,7 +57,7 @@ describe('classifyPattern', () => {
     expect(result.evidence).toMatch(/Layout effect/);
   });
 
-  test('returns setState-outside-react as fallback', () => {
+  test('returns setState-outside-react as fallback with empty suspects', () => {
     const fibers: FiberSnapshot = {
       withPassiveEffects: [],
       withLayoutEffects: [],
@@ -74,7 +74,8 @@ describe('classifyPattern', () => {
     };
     const result = classifyPattern(fibers);
     expect(result.pattern).toBe('setState-outside-react');
-    expect(result.suspects).toBe(fibers.withUpdates);
+    // Suspects are empty — userFrame on the FlushReport provides the call site
+    expect(result.suspects).toEqual([]);
     expect(result.evidence).toMatch(/batching/i);
   });
 

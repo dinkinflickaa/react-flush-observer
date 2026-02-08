@@ -157,12 +157,14 @@ describe('snapshotCommitFibers', () => {
     expect(result.withPassiveEffects[1].ownerName).toBe('MockComponent');
   });
 
-  test('resolves ownerName from nearest component ancestor for host fibers', () => {
+  test('excludes host fibers from withLayoutEffects (only component fibers)', () => {
     const MyComp = function MyComp() {};
-    // Host element (tag 5) with LayoutMask, owned by MyComp
+    // Host element (tag 5) with LayoutMask — should be excluded
     const hostChild = makeFiber({ tag: 5, flags: LayoutMask, type: 'button' });
+    // Component fiber (tag 0) with LayoutMask — should be included
     const compFiber = makeFiber({
       type: MyComp,
+      flags: LayoutMask,
       subtreeFlags: LayoutMask,
       child: hostChild,
     });
@@ -171,9 +173,10 @@ describe('snapshotCommitFibers', () => {
       child: compFiber,
     });
     const result = snapshotCommitFibers(makeRoot(rootFiber));
+    // Only the component fiber should be in withLayoutEffects
     expect(result.withLayoutEffects).toHaveLength(1);
-    expect(result.withLayoutEffects[0].tag).toBe(5);
-    expect(result.withLayoutEffects[0].ownerName).toBe('MyComp');
+    expect(result.withLayoutEffects[0].tag).toBe(0);
+    expect(result.withLayoutEffects[0].ownerName).toBe('MockComponent');
   });
 
   test('reads __componentId from fiber.type when present', () => {

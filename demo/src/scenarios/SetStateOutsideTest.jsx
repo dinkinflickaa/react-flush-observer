@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import Tag from './Tags';
 
 export default function SetStateOutsideTest() {
   const [a, setA] = useState(0);
@@ -15,9 +16,7 @@ export default function SetStateOutsideTest() {
     <div className="bg-white rounded-lg p-4 shadow-sm">
       <h2 className="text-sm font-semibold">
         setState outside React
-        <span className="ml-1.5 inline-block text-[11px] px-2 py-0.5 rounded-full font-semibold bg-red-100 text-red-800">
-          setState-outside-react
-        </span>
+        <Tag type="async" />
       </h2>
       <p className="text-xs text-gray-500 mt-1 mb-3">
         Two <code className="bg-gray-100 px-1 rounded">setState</code> calls inside{' '}

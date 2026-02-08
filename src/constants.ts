@@ -22,4 +22,5 @@ export const SyncLane = 1;
 export const NoLane = 0;
 
 // Effect tags
+export const HookHasEffect = 0b0001; // 1 — effect needs to fire (deps changed or mount)
 export const HookLayout = 0b0100; // 4
