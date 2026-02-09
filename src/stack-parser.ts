@@ -1,5 +1,16 @@
 import type { SourceInfo } from './types';
 
+const OBSERVER_NAMES = ['ResizeObserver', 'MutationObserver', 'IntersectionObserver'] as const;
+export type ObserverName = typeof OBSERVER_NAMES[number];
+
+export function findObserverInStack(stack: string | null): ObserverName | null {
+  if (!stack) return null;
+  for (const name of OBSERVER_NAMES) {
+    if (stack.includes(name)) return name;
+  }
+  return null;
+}
+
 const INTERNAL_PATTERNS = [
   'node_modules',
   'react-dom',

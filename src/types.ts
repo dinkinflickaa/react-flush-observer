@@ -94,6 +94,8 @@ export interface FiberSnapshot {
 export type FlushPattern =
   | 'setState-outside-react'
   | 'setState-in-layout-effect'
+  | 'setState-via-microtask'
+  | 'setState-in-observer'
   | 'lazy-in-render'
   | 'flushSync';
 

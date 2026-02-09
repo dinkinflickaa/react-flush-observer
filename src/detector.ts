@@ -10,7 +10,7 @@ import type {
 } from './types';
 import { snapshotCommitFibers } from './walker';
 import { classifyPattern } from './classifier';
-import { parseUserFrame } from './stack-parser';
+import { parseUserFrame, findObserverInStack } from './stack-parser';
 import {
   DEFAULT_MAX_COMMITS_PER_TASK,
   DEFAULT_MAX_COMMITS_PER_WINDOW,
@@ -138,7 +138,11 @@ function buildFlushReport(
       reportPattern = 'flushSync';
       reportEvidence = 'flushSync caused synchronous re-render';
     } else {
-      return null; // unknown cascade — skip
+      const observerName = findObserverInStack(currentStack) ?? findObserverInStack(originStack);
+      reportPattern = 'setState-in-observer';
+      reportEvidence = observerName
+        ? `${observerName} callback triggered setState in same task`
+        : 'Synchronous callback triggered setState in same task';
     }
   }
 
@@ -368,7 +372,8 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
             onFlush(report);
           }
         } else if (classification.pattern === 'setState-in-layout-effect') {
-          // Safety net: layout effect cascade not caught by pendingLanes
+          // pendingLanes was 0 → setState was NOT called directly in the layout effect.
+          // It was called in a microtask (queueMicrotask/Promise.then) queued by the effect.
           const report = buildFlushReport(
             state.lastCommitSnapshot ?? currentSnapshot,
             state.lastCommitStack,
@@ -377,6 +382,8 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
             now,
           );
           if (report) {
+            report.pattern = 'setState-via-microtask';
+            report.evidence = 'Microtask queued by layout effect called setState';
             state.reportedForCurrentChain = true;
             onFlush(report);
           }
@@ -399,8 +406,33 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
             };
             state.reportedForCurrentChain = true;
             onFlush(report);
+          } else {
+            // Same-task cascade with no layout effects and no flushSync.
+            // Most common cause: browser observer callback (ResizeObserver, etc.)
+            const observerName = findObserverInStack(commitStack)
+              ?? findObserverInStack(state.lastCommitStack);
+            const userFrame = parseUserFrame(commitStack)
+              ?? parseUserFrame(state.lastCommitStack);
+            const originSnapshot = state.lastCommitSnapshot ?? currentSnapshot;
+            const evidence = observerName
+              ? `${observerName} callback triggered setState in same task`
+              : 'Synchronous callback triggered setState in same task';
+            const report: FlushReport = {
+              type: 'flush',
+              timestamp: now,
+              pattern: 'setState-in-observer',
+              evidence,
+              suspects: classification.suspects,
+              flushedEffectsCount: originSnapshot.withLayoutEffects.length,
+              blockingDurationMs: now - state.lastCommitTime,
+              setStateLocation:
+                (originSnapshot.withLayoutEffects.find(f => f.effectSource)
+                  ?? originSnapshot.withLayoutEffects[0])?.source ?? null,
+              userFrame,
+            };
+            state.reportedForCurrentChain = true;
+            onFlush(report);
           }
-          // else: timer/unbatched — not a blocking cascade.  Skip reporting.
         }
       }
     }
@@ -420,7 +452,10 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
     } else {
       state.cascadeChainActive = false;
       state.cascadeOriginSnapshot = null;
-      state.reportedForCurrentChain = false;
+      // Don't reset reportedForCurrentChain here — it prevents the backward
+      // fallback from spuriously firing on the commit immediately after a
+      // forward-reported cascade.  It resets at task boundary and when a new
+      // cascade chain starts.
     }
 
     // Update state for next commit

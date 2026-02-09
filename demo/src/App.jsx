@@ -6,6 +6,7 @@ import HappyPathTest from './scenarios/HappyPathTest';
 import FlushSyncTest from './scenarios/FlushSyncTest';
 import CascadeTest from './scenarios/CascadeTest';
 import ResizeObserverTest from './scenarios/ResizeObserverTest';
+import MicrotaskLayoutEffectTest from './scenarios/MicrotaskLayoutEffectTest';
 import InfiniteLoopSyncTest from './scenarios/InfiniteLoopSyncTest';
 import InfiniteLoopAsyncTest from './scenarios/InfiniteLoopAsyncTest';
 import ErrorBoundaryCommitLoopTest from './scenarios/ErrorBoundaryCommitLoopTest';
@@ -41,6 +42,7 @@ export default function App() {
       {tab === 'nested' && (
         <>
           <LayoutEffectTest />
+          <MicrotaskLayoutEffectTest />
           <LazyInRenderTest />
           <SetStateOutsideTest />
           <HappyPathTest />

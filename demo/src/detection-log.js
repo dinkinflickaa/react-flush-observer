@@ -19,6 +19,16 @@ const PATTERN_STYLES = {
     border: 'border-red-400',
     label: 'Outside React',
   },
+  'setState-via-microtask': {
+    bg: 'bg-cyan-50',
+    border: 'border-cyan-400',
+    label: 'Microtask Effect',
+  },
+  'setState-in-observer': {
+    bg: 'bg-teal-50',
+    border: 'border-teal-400',
+    label: 'Observer Callback',
+  },
   'flushSync': {
     bg: 'bg-orange-50',
     border: 'border-orange-500',

@@ -166,16 +166,19 @@ describe('createDetector', () => {
     detector.handleCommit(makePassiveEffectRoot());
   });
 
-  test('does not fire for unbatched setTimeout-style commits (no layout effects, no flushSync)', () => {
+  test('fires setState-in-observer for same-task commits without layout effects or flushSync', () => {
     const onFlush = jest.fn();
     const detector = tracked({ onFlush, sampleRate: 1.0 });
 
     // Two passive-effect roots — classified as setState-outside-react,
-    // no flushSync in the call stack → skip reporting
+    // no flushSync in the call stack → reports setState-in-observer
     detector.handleCommit(makePassiveEffectRoot());
     detector.handleCommit(makePassiveEffectRoot());
 
-    expect(onFlush).not.toHaveBeenCalled();
+    expect(onFlush).toHaveBeenCalledTimes(1);
+    const report = onFlush.mock.calls[0][0] as FlushReport;
+    expect(report.pattern).toBe('setState-in-observer');
+    expect(report.evidence).toBe('Synchronous callback triggered setState in same task');
   });
 
   test('fires with flushSync pattern when flushSync is in the call stack', () => {
@@ -306,7 +309,42 @@ describe('createDetector', () => {
       expect(report.flushedEffectsCount).toBe(1);
     });
 
-    test('pendingLanes=0 on both roots and no flushSync produces no report', () => {
+    test('backward fallback reports setState-via-microtask when pendingLanes=0 with layout effects', () => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      // Origin commit has layout effects but pendingLanes=0 (microtask-queued setState)
+      const root1 = makeLayoutEffectRoot();
+      // pendingLanes defaults to 0 — backward fallback path
+      detector.handleCommit(root1);
+
+      // Cascade commit
+      detector.handleCommit(makePassiveEffectRoot());
+
+      expect(onFlush).toHaveBeenCalledTimes(1);
+      const report = onFlush.mock.calls[0][0] as FlushReport;
+      expect(report.pattern).toBe('setState-via-microtask');
+      expect(report.evidence).toBe('Microtask queued by layout effect called setState');
+    });
+
+    test('forward path still reports setState-in-layout-effect when pendingLanes=SyncLane', () => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      // Origin commit has layout effects AND pendingLanes=1 (direct setState in layout effect)
+      const root1 = makeLayoutEffectRoot();
+      root1.pendingLanes = 1; // SyncLane — forward path
+      detector.handleCommit(root1);
+
+      // Cascade commit
+      detector.handleCommit(makePassiveEffectRoot());
+
+      expect(onFlush).toHaveBeenCalledTimes(1);
+      const report = onFlush.mock.calls[0][0] as FlushReport;
+      expect(report.pattern).toBe('setState-in-layout-effect');
+    });
+
+    test('pendingLanes=0 on both roots and no flushSync fires setState-in-observer', () => {
       const onFlush = jest.fn();
       const detector = tracked({ onFlush, sampleRate: 1.0 });
 
@@ -314,7 +352,80 @@ describe('createDetector', () => {
       detector.handleCommit(makePassiveEffectRoot());
       detector.handleCommit(makePassiveEffectRoot());
 
-      expect(onFlush).not.toHaveBeenCalled();
+      expect(onFlush).toHaveBeenCalledTimes(1);
+      const report = onFlush.mock.calls[0][0] as FlushReport;
+      expect(report.pattern).toBe('setState-in-observer');
+    });
+  });
+
+  describe('observer callback detection', () => {
+    test('enriches evidence when ResizeObserver appears in call stack', () => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      // Wrap in a function named ResizeObserver so it appears in Error().stack
+      function ResizeObserver() {
+        detector.handleCommit(makePassiveEffectRoot());
+      }
+
+      ResizeObserver(); // commit 1 — stack contains "ResizeObserver"
+      ResizeObserver(); // commit 2 — backward fallback fires
+
+      expect(onFlush).toHaveBeenCalledTimes(1);
+      const report = onFlush.mock.calls[0][0] as FlushReport;
+      expect(report.pattern).toBe('setState-in-observer');
+      expect(report.evidence).toContain('ResizeObserver');
+    });
+
+    test('generic evidence when no observer name in stack', () => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      detector.handleCommit(makePassiveEffectRoot());
+      detector.handleCommit(makePassiveEffectRoot());
+
+      expect(onFlush).toHaveBeenCalledTimes(1);
+      const report = onFlush.mock.calls[0][0] as FlushReport;
+      expect(report.pattern).toBe('setState-in-observer');
+      expect(report.evidence).toBe('Synchronous callback triggered setState in same task');
+    });
+
+    test('enriches evidence when MutationObserver appears in call stack', () => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      function MutationObserver() {
+        detector.handleCommit(makePassiveEffectRoot());
+      }
+
+      MutationObserver();
+      MutationObserver();
+
+      expect(onFlush).toHaveBeenCalledTimes(1);
+      const report = onFlush.mock.calls[0][0] as FlushReport;
+      expect(report.pattern).toBe('setState-in-observer');
+      expect(report.evidence).toContain('MutationObserver');
+    });
+
+    test('flushSync takes priority over observer detection', () => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      // Both flushSync and ResizeObserver in the call stack
+      function ResizeObserver() {
+        function flushSync() {
+          detector.handleCommit(makePassiveEffectRoot());
+        }
+        flushSync();
+      }
+
+      ResizeObserver();
+      ResizeObserver();
+
+      expect(onFlush).toHaveBeenCalledTimes(1);
+      const report = onFlush.mock.calls[0][0] as FlushReport;
+      // flushSync check comes first in the if/else chain
+      expect(report.pattern).toBe('flushSync');
     });
   });
 
