@@ -20,13 +20,11 @@ import {
 } from './constants';
 
 interface DetectorState {
-  commitInCurrentTask: boolean;
   taskBoundaryPending: boolean;
   lastCommitTime: number;
   lastCommitSnapshot: FiberSnapshot | null;
   commitCountInCurrentTask: number;
   syncLoopFiredThisTask: boolean;
-  flushReportsThisTask: number;
   // Sliding window for async loop detection (ring buffer of timestamps)
   windowTimestamps: number[];
   windowWritePos: number;
@@ -34,6 +32,14 @@ interface DetectorState {
   lastAsyncLoopFireTime: number;
   lastCommitStack: string | null;
   disposed: boolean;
+  // Forward-looking cascade chain tracking
+  cascadeChainActive: boolean;
+  cascadeOriginSnapshot: FiberSnapshot | null;
+  cascadeOriginStack: string | null;
+  cascadeOriginTime: number;
+  reportedForCurrentChain: boolean;
+  // Backward-looking fallback (for Suspense and non-SyncLane cascades)
+  hadCommitInCurrentTask: boolean;
 }
 
 function freezeRootLanes(root: FiberRoot): void {
@@ -115,6 +121,42 @@ function hasFlushSyncInStack(stack: string | null): boolean {
   return /\bflushSync\b/.test(stack);
 }
 
+function buildFlushReport(
+  originSnapshot: FiberSnapshot,
+  originStack: string | null,
+  currentStack: string | null,
+  originTime: number,
+  now: number,
+): FlushReport | null {
+  const classification = classifyPattern(originSnapshot);
+
+  let reportPattern = classification.pattern;
+  let reportEvidence = classification.evidence;
+
+  if (classification.pattern === 'setState-outside-react') {
+    if (hasFlushSyncInStack(currentStack) || hasFlushSyncInStack(originStack)) {
+      reportPattern = 'flushSync';
+      reportEvidence = 'flushSync caused synchronous re-render';
+    } else {
+      return null; // unknown cascade — skip
+    }
+  }
+
+  return {
+    type: 'flush',
+    timestamp: now,
+    pattern: reportPattern,
+    evidence: reportEvidence,
+    suspects: classification.suspects,
+    flushedEffectsCount: originSnapshot.withLayoutEffects.length,
+    blockingDurationMs: now - originTime,
+    setStateLocation:
+      (originSnapshot.withLayoutEffects.find(f => f.effectSource)
+        ?? originSnapshot.withLayoutEffects[0])?.source ?? null,
+    userFrame: parseUserFrame(currentStack) ?? parseUserFrame(originStack),
+  };
+}
+
 function resolveBreakConfig(value: boolean | BreakOnLoopConfig): { sync: boolean; async: boolean } {
   if (typeof value === 'boolean') return { sync: value, async: value };
   return { sync: value.sync ?? true, async: value.async ?? true };
@@ -134,31 +176,40 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
   let breakConfig = resolveBreakConfig(initialBreakOnLoop);
 
   const state: DetectorState = {
-    commitInCurrentTask: false,
     taskBoundaryPending: false,
     lastCommitTime: 0,
     lastCommitSnapshot: null,
     commitCountInCurrentTask: 0,
     syncLoopFiredThisTask: false,
-    flushReportsThisTask: 0,
     windowTimestamps: new Array<number>(maxCommitsPerWindow),
     windowWritePos: 0,
     windowFilled: false,
     lastAsyncLoopFireTime: 0,
     lastCommitStack: null,
     disposed: false,
+    cascadeChainActive: false,
+    cascadeOriginSnapshot: null,
+    cascadeOriginStack: null,
+    cascadeOriginTime: 0,
+    reportedForCurrentChain: false,
+    hadCommitInCurrentTask: false,
   };
 
   // MessageChannel for detecting task boundaries
   const channel = new MessageChannel();
   channel.port1.onmessage = () => {
     if (state.disposed) return;
-    state.commitInCurrentTask = false;
     state.taskBoundaryPending = false;
     state.commitCountInCurrentTask = 0;
     state.syncLoopFiredThisTask = false;
-    state.flushReportsThisTask = 0;
     state.lastCommitStack = null;
+    // Flush detection resets
+    state.cascadeChainActive = false;
+    state.cascadeOriginSnapshot = null;
+    state.cascadeOriginStack = null;
+    state.cascadeOriginTime = 0;
+    state.reportedForCurrentChain = false;
+    state.hadCommitInCurrentTask = false;
   };
 
   function buildLoopReport(
@@ -277,67 +328,103 @@ export function createDetector(config: Partial<DetectorConfig> = {}): Detector {
       state.windowFilled = true;
     }
 
-    // Detect forced flush (sync re-render in same task)
-    const isForcedFlush = state.commitInCurrentTask;
-
     // Snapshot the current commit eagerly — used both for the flush report
     // (to identify which component is being re-rendered NOW) and stored
     // as the triggering snapshot for the next commit.
     const currentSnapshot = snapshotCommitFibers(root);
 
-    // Cap flush reports per task: enough for cascades (2-3), but stops flooding
-    // during sync loops where every iteration is technically a forced flush.
-    const MAX_FLUSH_REPORTS_PER_TASK = 3;
-    if (isForcedFlush && onFlush && !state.syncLoopFiredThisTask
-        && state.flushReportsThisTask < MAX_FLUSH_REPORTS_PER_TASK
-        && Math.random() < sampleRate) {
-      const triggeringSnapshot = state.lastCommitSnapshot
-        ?? currentSnapshot;
-      const classification = classifyPattern(triggeringSnapshot);
-
-      // The classifier only sees fiber snapshots — it returns
-      // "setState-outside-react" for both flushSync and setTimeout unbatched
-      // commits (neither has layout effects).  Distinguish them via the call
-      // stack: flushSync appears as a named frame in both dev and prod builds.
-      let reportPattern = classification.pattern;
-      let reportEvidence = classification.evidence;
-
-      if (classification.pattern === 'setState-outside-react') {
-        if (hasFlushSyncInStack(commitStack) || hasFlushSyncInStack(state.lastCommitStack)) {
-          reportPattern = 'flushSync';
-          reportEvidence = 'flushSync caused synchronous re-render';
-        } else {
-          // Unbatched setTimeout in legacy mode — not a cascading nested
-          // update that blocks the frame.  Skip reporting.
-          reportPattern = null!;
+    if (onFlush && !state.syncLoopFiredThisTask && Math.random() < sampleRate) {
+      // STEP 1: Forward-looking cascade report.
+      // If the previous commit predicted a cascade (via pendingLanes & SyncLane),
+      // this IS the cascade commit.  Report once using the origin snapshot.
+      if (state.cascadeChainActive && !state.reportedForCurrentChain) {
+        const report = buildFlushReport(
+          state.cascadeOriginSnapshot!,
+          state.cascadeOriginStack,
+          commitStack,
+          state.cascadeOriginTime,
+          now,
+        );
+        if (report) {
+          state.reportedForCurrentChain = true;
+          onFlush(report);
         }
       }
 
-      if (reportPattern) {
-        const userFrame = parseUserFrame(commitStack)
-          ?? parseUserFrame(state.lastCommitStack);
-
-        const report: FlushReport = {
-          type: 'flush',
-          timestamp: now,
-          pattern: reportPattern,
-          evidence: reportEvidence,
-          suspects: classification.suspects,
-          flushedEffectsCount: triggeringSnapshot.withLayoutEffects.length,
-          blockingDurationMs: now - state.lastCommitTime,
-          setStateLocation:
-            (triggeringSnapshot.withLayoutEffects.find(f => f.effectSource)
-              ?? triggeringSnapshot.withLayoutEffects[0])?.source ?? null,
-          userFrame,
-        };
-
-        state.flushReportsThisTask++;
-        onFlush(report);
+      // STEP 2: Backward-looking fallback (Suspense, flushSync, edge cases).
+      // Handles cases where pendingLanes didn't predict the cascade.
+      else if (state.hadCommitInCurrentTask && !state.cascadeChainActive && !state.reportedForCurrentChain) {
+        const classification = classifyPattern(state.lastCommitSnapshot ?? currentSnapshot);
+        if (classification.pattern === 'lazy-in-render') {
+          const report = buildFlushReport(
+            state.lastCommitSnapshot ?? currentSnapshot,
+            state.lastCommitStack,
+            commitStack,
+            state.lastCommitTime,
+            now,
+          );
+          if (report) {
+            state.reportedForCurrentChain = true;
+            onFlush(report);
+          }
+        } else if (classification.pattern === 'setState-in-layout-effect') {
+          // Safety net: layout effect cascade not caught by pendingLanes
+          const report = buildFlushReport(
+            state.lastCommitSnapshot ?? currentSnapshot,
+            state.lastCommitStack,
+            commitStack,
+            state.lastCommitTime,
+            now,
+          );
+          if (report) {
+            state.reportedForCurrentChain = true;
+            onFlush(report);
+          }
+        } else if (classification.pattern === 'setState-outside-react') {
+          if (hasFlushSyncInStack(commitStack) || hasFlushSyncInStack(state.lastCommitStack)) {
+            const userFrame = parseUserFrame(commitStack)
+              ?? parseUserFrame(state.lastCommitStack);
+            const report: FlushReport = {
+              type: 'flush',
+              timestamp: now,
+              pattern: 'flushSync',
+              evidence: 'flushSync caused synchronous re-render',
+              suspects: classification.suspects,
+              flushedEffectsCount: (state.lastCommitSnapshot ?? currentSnapshot).withLayoutEffects.length,
+              blockingDurationMs: now - state.lastCommitTime,
+              setStateLocation:
+                ((state.lastCommitSnapshot ?? currentSnapshot).withLayoutEffects.find(f => f.effectSource)
+                  ?? (state.lastCommitSnapshot ?? currentSnapshot).withLayoutEffects[0])?.source ?? null,
+              userFrame,
+            };
+            state.reportedForCurrentChain = true;
+            onFlush(report);
+          }
+          // else: timer/unbatched — not a blocking cascade.  Skip reporting.
+        }
       }
     }
 
+    // STEP 3: Forward-look — does THIS commit predict a cascade?
+    const willCascade = (root.pendingLanes & SyncLane) !== 0;
+    if (willCascade) {
+      if (!state.cascadeChainActive) {
+        // Start of a new cascade chain
+        state.cascadeChainActive = true;
+        state.cascadeOriginSnapshot = currentSnapshot;
+        state.cascadeOriginStack = commitStack;
+        state.cascadeOriginTime = now;
+        state.reportedForCurrentChain = false;
+      }
+      // else: chain continues, keep origin
+    } else {
+      state.cascadeChainActive = false;
+      state.cascadeOriginSnapshot = null;
+      state.reportedForCurrentChain = false;
+    }
+
     // Update state for next commit
-    state.commitInCurrentTask = true;
+    state.hadCommitInCurrentTask = true;
     state.lastCommitTime = now;
     state.lastCommitSnapshot = currentSnapshot;
     state.lastCommitStack = commitStack;

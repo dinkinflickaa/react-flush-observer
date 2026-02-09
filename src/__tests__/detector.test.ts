@@ -79,7 +79,7 @@ describe('createDetector', () => {
     expect(onFlush).not.toHaveBeenCalled();
   });
 
-  test('fires onFlush when two commits occur in the same task', () => {
+  test('fires onFlush when two commits occur in the same task (pendingLanes predicts cascade)', () => {
     const onFlush = jest.fn();
     const detector = tracked({ onFlush, sampleRate: 1.0 });
 
@@ -87,6 +87,7 @@ describe('createDetector', () => {
     performance.now = () => now;
 
     const root1 = makeLayoutEffectRoot();
+    root1.pendingLanes = 1; // SyncLane — predicts cascade
     detector.handleCommit(root1);
 
     now = 105;
@@ -104,22 +105,30 @@ describe('createDetector', () => {
     expect(Array.isArray(report.suspects)).toBe(true);
   });
 
-  test('three commits in one task fires two flush reports for cascading layout effects', () => {
+  test('three-commit cascade with pendingLanes fires only one flush report (root cause)', () => {
     const onFlush = jest.fn();
     const detector = tracked({ onFlush, sampleRate: 1.0 });
 
     let now = 100;
     performance.now = () => now;
 
-    // Models a 3-commit cascade: each commit has layout effects that trigger
-    // the next setState, producing a genuine cascading nested update.
-    detector.handleCommit(makeLayoutEffectRoot());
+    // Models a 3-commit cascade: A→B→C. Root 1 and 2 have pendingLanes=1
+    // (SyncLane), predicting cascades. Only one report should fire — for
+    // the root cause (commit A's snapshot).
+    const root1 = makeLayoutEffectRoot();
+    root1.pendingLanes = 1; // predicts cascade → commit B
+    detector.handleCommit(root1);
     now = 105;
-    detector.handleCommit(makeLayoutEffectRoot());
+    const root2 = makeLayoutEffectRoot();
+    root2.pendingLanes = 1; // chain continues → commit C
+    detector.handleCommit(root2);
     now = 110;
-    detector.handleCommit(makeLayoutEffectRoot());
+    detector.handleCommit(makeLayoutEffectRoot()); // pendingLanes=0, chain ends
 
-    expect(onFlush).toHaveBeenCalledTimes(2);
+    expect(onFlush).toHaveBeenCalledTimes(1);
+    // Report uses origin (commit A) snapshot
+    const report = onFlush.mock.calls[0][0] as FlushReport;
+    expect(report.pattern).toBe('setState-in-layout-effect');
   });
 
   test('resets state after task boundary', (done) => {
@@ -206,6 +215,107 @@ describe('createDetector', () => {
     expect(
       (onFlush.mock.calls[0][0] as FlushReport).pattern
     ).toBe('lazy-in-render');
+  });
+
+  describe('pendingLanes-based cascade detection', () => {
+    test('two-commit cascade with pendingLanes prediction fires 1 report', () => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      const root1 = makeLayoutEffectRoot();
+      root1.pendingLanes = 1; // SyncLane — predicts cascade
+      detector.handleCommit(root1);
+      detector.handleCommit(makePassiveEffectRoot()); // cascade commit
+
+      expect(onFlush).toHaveBeenCalledTimes(1);
+      const report = onFlush.mock.calls[0][0] as FlushReport;
+      expect(report.pattern).toBe('setState-in-layout-effect');
+    });
+
+    test('three-commit cascade fires only 1 report (suppresses duplicates)', () => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      const root1 = makeLayoutEffectRoot();
+      root1.pendingLanes = 1;
+      detector.handleCommit(root1);
+
+      const root2 = makeLayoutEffectRoot();
+      root2.pendingLanes = 1; // chain continues
+      detector.handleCommit(root2);
+
+      detector.handleCommit(makeLayoutEffectRoot()); // chain ends
+
+      expect(onFlush).toHaveBeenCalledTimes(1);
+    });
+
+    test('two independent cascades in one task fire 2 reports', () => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      // First cascade: A→B
+      const rootA = makeLayoutEffectRoot();
+      rootA.pendingLanes = 1;
+      detector.handleCommit(rootA);
+      detector.handleCommit(makePassiveEffectRoot()); // cascade commit, pendingLanes=0
+
+      // Second cascade: C→D
+      const rootC = makeLayoutEffectRoot();
+      rootC.pendingLanes = 1;
+      detector.handleCommit(rootC);
+      detector.handleCommit(makePassiveEffectRoot()); // cascade commit
+
+      expect(onFlush).toHaveBeenCalledTimes(2);
+    });
+
+    test('cascade chain resets at task boundary', (done) => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      // Start a cascade prediction in first task
+      const root1 = makeLayoutEffectRoot();
+      root1.pendingLanes = 1;
+      detector.handleCommit(root1);
+
+      // Wait for task boundary
+      setTimeout(() => {
+        setTimeout(() => {
+          // Commit in new task — cascade state should be reset
+          detector.handleCommit(makePassiveEffectRoot());
+          expect(onFlush).not.toHaveBeenCalled();
+          done();
+        }, 0);
+      }, 0);
+    });
+
+    test('report uses ORIGIN snapshot (not cascade commit snapshot)', () => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      // Origin commit has 1 layout effect fiber
+      const root1 = makeLayoutEffectRoot();
+      root1.pendingLanes = 1;
+      detector.handleCommit(root1);
+
+      // Cascade commit has only passive effects (no layout effects)
+      detector.handleCommit(makePassiveEffectRoot());
+
+      expect(onFlush).toHaveBeenCalledTimes(1);
+      const report = onFlush.mock.calls[0][0] as FlushReport;
+      // flushedEffectsCount comes from origin snapshot which has 1 layout effect
+      expect(report.flushedEffectsCount).toBe(1);
+    });
+
+    test('pendingLanes=0 on both roots and no flushSync produces no report', () => {
+      const onFlush = jest.fn();
+      const detector = tracked({ onFlush, sampleRate: 1.0 });
+
+      // Two passive-effect roots with no pendingLanes and no flushSync
+      detector.handleCommit(makePassiveEffectRoot());
+      detector.handleCommit(makePassiveEffectRoot());
+
+      expect(onFlush).not.toHaveBeenCalled();
+    });
   });
 
   describe('sync infinite loop detection', () => {

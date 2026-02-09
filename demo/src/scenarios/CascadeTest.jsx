@@ -26,7 +26,7 @@ export default function CascadeTest() {
       </h2>
       <p className="text-xs text-gray-500 mt-1 mb-3">
         Two chained <code className="bg-gray-100 px-1 rounded">useLayoutEffect</code> setState calls create 3 commits
-        per click. Expect exactly 2 detections (one for each extra commit).
+        per click. Expect exactly 1 detection (root cause only).
       </p>
       <button
         onClick={() => setStep(s => s + 1)}
