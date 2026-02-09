@@ -25,12 +25,11 @@ export function classifyPattern(snapshot: FiberSnapshot): ClassificationResult {
   }
 
   // Default: multiple setState calls outside React batching.
-  // Component fibers have no reliable flags for pure-state updates, so
-  // suspects may be empty.  The flush report's userFrame (from call stack)
-  // provides the actual setState call site for debugging.
+  // Use withUpdates fibers as suspects — these are the components that
+  // received state updates (non-zero lanes), giving the root cause.
   return {
     pattern: 'setState-outside-react',
-    suspects: [],
+    suspects: snapshot.withUpdates as FiberInfo[],
     evidence: 'Multiple commits in same task without React batching',
   };
 }

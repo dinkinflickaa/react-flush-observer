@@ -180,8 +180,16 @@ function walkFiber(
     result.withSuspense.push(suspenseInfo);
   }
 
-  // Check for pending updates
-  if (fiber.lanes !== 0 || fiber.childLanes !== 0) {
+  // Check for pending updates or re-rendered components.
+  // At commit time, lanes for the committed work are already cleared, so
+  // also detect component fibers whose memoizedState changed vs. their
+  // alternate — this captures components that re-rendered with new state
+  // (e.g., setState called from an observer callback).
+  const hasLanes = fiber.lanes !== 0 || fiber.childLanes !== 0;
+  const stateChanged = isComponent
+    && fiber.alternate != null
+    && fiber.memoizedState !== fiber.alternate.memoizedState;
+  if (hasLanes || stateChanged) {
     const updatesInfo: UpdatesFiberInfo = {
       ...baseInfo,
       lanes: fiber.lanes | fiber.childLanes,

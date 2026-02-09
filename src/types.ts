@@ -35,6 +35,7 @@ export interface Fiber {
   child: Fiber | null;
   sibling: Fiber | null;
   updateQueue?: UpdateQueue | null;
+  memoizedState?: unknown;
   _debugSource?: DebugSource;
   _debugOwner?: Fiber;
 }
